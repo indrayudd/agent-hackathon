@@ -1,0 +1,207 @@
+"""Run router: trigger the real-time EDA agent for a session."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import pathlib
+import threading
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+
+from backend.services.session_manager import get_session_dir
+from backend.routers.stream import push_event
+
+router = APIRouter(tags=["run"])
+_LOG = logging.getLogger(__name__)
+
+# Track running agents per session
+_running: dict[str, threading.Thread] = {}
+
+
+def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path):
+    """Run the EDA agent loop in a background thread, streaming all events."""
+    try:
+        (session_dir / "status.json").write_text(
+            json.dumps({"status": "running", "phase": "starting"})
+        )
+
+        from src.agent.eda_agent import run_agent
+        state = run_agent(
+            session_id=session_id,
+            dataset_path=dataset_path,
+            push_event=push_event,
+        )
+
+        # Save state summary
+        (session_dir / "agent_state.json").write_text(
+            json.dumps({
+                "findings": state.findings,
+                "errors": state.errors_encountered,
+                "phases": state.phases_completed,
+                "row_count": state.row_count,
+                "col_count": state.col_count,
+                "time_col": state.time_col,
+                "numeric_cols": state.numeric_cols,
+                "summary": state.summarize(),
+            }, default=str, indent=2)
+        )
+
+        # Generate story from knowledge graph (if available) or findings
+        try:
+            import datetime
+
+            # Use knowledge graph if the investigation phase ran
+            kg = getattr(state, "knowledge_graph", None)
+            if kg is not None:
+                sections = kg.get_story_sections()
+                conclusions = kg.get_top_conclusions(5)
+            else:
+                # Fallback: group findings by phase
+                phase_findings: dict[str, list[str]] = {}
+                for f in state.findings:
+                    phase_findings.setdefault(f.get("phase", ""), []).append(f.get("finding", ""))
+                sections = []
+                for phase, flist in phase_findings.items():
+                    phase_cells = [cid for cid, p in state.cell_phases.items() if p == phase]
+                    sections.append({
+                        "phase": phase,
+                        "title": phase,
+                        "content": "\n".join(f"- {f}" for f in flist),
+                        "cell_ids": phase_cells,
+                    })
+                conclusions = [f.get("finding", "") for f in state.findings[:5]]
+
+            # LLM narrative for executive summary
+            narrative = ""
+            try:
+                from src.config.config import get_chat_model
+                from langchain_core.messages import SystemMessage, HumanMessage
+                llm = get_chat_model()
+
+                conclusions_text = "\n".join(f"- {c}" for c in conclusions)
+                findings_text = "\n".join(
+                    f"- [{f.get('phase', '')}] {f.get('finding', '')}" for f in state.findings
+                )
+
+                resp = llm.invoke([
+                    SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points."),
+                    HumanMessage(content=f"Dataset: {os.path.basename(dataset_path)}\n{state.row_count} rows x {state.col_count} cols\nColumns: {', '.join(state.columns[:15])}\nTime column: {state.time_col}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
+                ])
+                narrative = resp.content.strip()
+            except Exception as llm_exc:
+                _LOG.warning("LLM narrative failed: %s", llm_exc)
+                narrative = "\n".join(f"- {c}" for c in conclusions)
+
+            story_data = {
+                "title": f"EDA Report: {os.path.basename(dataset_path)}",
+                "executive_summary": narrative,
+                "sections": sections,
+                "generated_at": datetime.datetime.now().isoformat(),
+            }
+            if kg is not None:
+                story_data["knowledge_graph"] = kg.to_dict()
+
+            (session_dir / "story.json").write_text(
+                json.dumps(story_data, default=str, indent=2)
+            )
+            _LOG.info("Story written: %d sections, narrative %d chars, kg=%s",
+                      len(sections), len(narrative), kg is not None)
+        except Exception as exc:
+            _LOG.exception("Story generation failed: %s", exc)
+
+        # Create version snapshot
+        try:
+            from src.reporting.versioning import create_snapshot
+            create_snapshot(session_id, "Initial EDA run")
+            _LOG.info("Version snapshot created for session %s", session_id)
+        except Exception as exc:
+            _LOG.warning("Version snapshot failed: %s", exc)
+
+        # Update chat agent with findings
+        try:
+            from backend.routers.chat import set_session_state
+            chat_state = {
+                "findings": state.findings,
+                "insights": state.findings,
+                "time_col": state.time_col,
+                "numeric_cols": state.numeric_cols,
+                "categorical_cols": state.categorical_cols,
+                "columns": state.columns,
+                "dtypes": state.dtypes,
+                "row_count": state.row_count,
+                "col_count": state.col_count,
+                "phases_completed": state.phases_completed,
+                "decision_summary": {"summary": state.summarize()},
+                "cell_phases": state.cell_phases,
+            }
+            set_session_state(session_id, chat_state)
+            _LOG.info("Chat state set for session %s: %d findings, %d numeric cols",
+                      session_id, len(state.findings), len(state.numeric_cols))
+        except Exception as exc:
+            _LOG.warning("Chat state update failed: %s", exc)
+
+        (session_dir / "status.json").write_text(
+            json.dumps({"status": "completed", "phases_run": state.phases_completed})
+        )
+
+    except Exception as exc:
+        _LOG.exception("Agent failed for session %s", session_id)
+        (session_dir / "status.json").write_text(
+            json.dumps({"status": "failed", "error": str(exc)})
+        )
+        push_event(session_id, {"type": "complete", "summary": f"Error: {exc}"})
+    finally:
+        _running.pop(session_id, None)
+        # Kernel intentionally kept alive for chat-driven code execution
+
+
+@router.post("/run/{session_id}", status_code=202)
+async def run_pipeline(session_id: str):
+    """Kick off the real-time EDA agent in a background thread."""
+    if session_id in _running and _running[session_id].is_alive():
+        return JSONResponse(
+            status_code=409,
+            content={"status": "conflict", "message": "Agent already running"},
+        )
+
+    try:
+        session_dir = get_session_dir(session_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Find the uploaded dataset
+    uploads_dir = session_dir / "uploads"
+    dataset_files = list(uploads_dir.iterdir()) if uploads_dir.is_dir() else []
+    if not dataset_files:
+        raise HTTPException(status_code=400, detail="No dataset uploaded")
+
+    dataset_path = str(dataset_files[0])
+    thread = threading.Thread(
+        target=_run_agent_in_thread,
+        args=(session_id, dataset_path, session_dir),
+        daemon=True,
+    )
+    _running[session_id] = thread
+    thread.start()
+
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "session_id": session_id},
+    )
+
+
+@router.get("/run/{session_id}/status")
+async def pipeline_status(session_id: str):
+    """Check the agent run status for a session."""
+    try:
+        session_dir = get_session_dir(session_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    status_file = session_dir / "status.json"
+    if not status_file.exists():
+        return {"status": "idle"}
+
+    return json.loads(status_file.read_text())

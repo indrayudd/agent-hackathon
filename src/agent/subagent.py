@@ -1,0 +1,224 @@
+"""Subagent runner — investigates a single hypothesis with code cells."""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+_LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class InvestigationResult:
+    """Result of a hypothesis investigation."""
+    hypothesis_id: str
+    hypothesis_title: str
+    finding: str
+    cell_ids: list[str] = field(default_factory=list)
+    plot_cell_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.5
+    sub_findings: list[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "hypothesis_id": self.hypothesis_id,
+            "hypothesis_title": self.hypothesis_title,
+            "finding": self.finding,
+            "cell_ids": self.cell_ids,
+            "plot_cell_ids": self.plot_cell_ids,
+            "confidence": self.confidence,
+            "sub_findings": self.sub_findings,
+        }
+
+
+def run_subagent(
+    hypothesis_id: str,
+    hypothesis_title: str,
+    hypothesis_description: str,
+    relevant_cols: list[str],
+    all_columns: list[str],
+    time_col: str | None,
+    session_id: str,
+    push_event: Callable[[str, dict], None],
+    execute_code: Callable[[str, str, int], tuple[list[dict], str | None]],
+    cell_counter: list[int],  # mutable counter [current_count]
+    max_cells: int = 5,
+) -> InvestigationResult:
+    """
+    Investigate a hypothesis by writing and executing notebook cells.
+
+    :param hypothesis_id: unique ID for this hypothesis
+    :param hypothesis_title: short title
+    :param hypothesis_description: what to investigate
+    :param relevant_cols: columns relevant to this hypothesis
+    :param all_columns: all available column names
+    :param time_col: time column name (or None)
+    :param session_id: session for kernel execution
+    :param push_event: callback to stream events to frontend
+    :param execute_code: callback to execute code in kernel
+    :param cell_counter: shared mutable counter for cell IDs
+    :param max_cells: maximum cells this subagent can write
+    """
+    result = InvestigationResult(
+        hypothesis_id=hypothesis_id,
+        hypothesis_title=hypothesis_title,
+        finding="",
+    )
+
+    col_list = ", ".join(f'"{c}"' for c in all_columns)
+    relevant_str = ", ".join(f'"{c}"' for c in relevant_cols)
+
+    def _next_cell_id() -> str:
+        cell_counter[0] += 1
+        return f"{hypothesis_id}_cell_{cell_counter[0]}"
+
+    def _write_and_execute(code: str, cell_type: str = "code") -> tuple[str, list[dict], str | None]:
+        """Write a cell, execute it, stream events, return (cell_id, outputs, error)."""
+        cell_id = _next_cell_id()
+        push_event(session_id, {
+            "type": "cell_write",
+            "cell_id": cell_id,
+            "cell_type": cell_type,
+            "source": code,
+        })
+        time.sleep(0.05)
+
+        if cell_type == "markdown":
+            return cell_id, [], None
+
+        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id})
+        outputs, error = execute_code(session_id, code, 60)
+
+        if error:
+            push_event(session_id, {
+                "type": "cell_error", "cell_id": cell_id, "error": error,
+            })
+        else:
+            push_event(session_id, {
+                "type": "cell_output", "cell_id": cell_id, "outputs": outputs,
+            })
+            # Check if outputs contain plots
+            for o in outputs:
+                if o.get("data", {}).get("image/png"):
+                    result.plot_cell_ids.append(cell_id)
+                    break
+
+        result.cell_ids.append(cell_id)
+        time.sleep(0.05)
+        return cell_id, outputs, error
+
+    def _extract_text(outputs: list[dict]) -> str:
+        parts = []
+        for o in outputs:
+            if o.get("text"):
+                parts.append(o["text"])
+            if o.get("data", {}).get("text/plain"):
+                parts.append(str(o["data"]["text/plain"]))
+            if o.get("data", {}).get("image/png"):
+                parts.append("[plot generated]")
+        return "\n".join(parts)
+
+    # --- Generate investigation plan ---
+    try:
+        from src.config.config import get_chat_model
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        llm = get_chat_model()
+
+        plan_response = llm.invoke([
+            SystemMessage(content=f"""You are investigating a data hypothesis. Generate Python code cells to test it.
+
+Available columns: [{col_list}]
+Relevant columns for this hypothesis: [{relevant_str}]
+Time column: {time_col or 'none'}
+Variable `df` is already loaded in the kernel.
+
+Rules:
+- Write at most {max_cells} code cells (as a JSON array of code strings)
+- Each cell should be focused on ONE analysis step
+- Use ONLY columns from the available list
+- Include matplotlib plots where relevant (always plt.show())
+- Print findings clearly with numbers
+- The cells should PROGRESSIVELY build toward answering the hypothesis
+- Include statistical tests where appropriate (scipy.stats, etc.)
+
+Respond with JSON (no markdown fencing):
+{{"cells": ["code string 1", "code string 2", ...], "reasoning": "what each cell does"}}"""),
+            HumanMessage(content=f"Hypothesis: {hypothesis_title}\nDescription: {hypothesis_description}"),
+        ])
+
+        text = plan_response.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+
+        plan = json.loads(text)
+        cells_code = plan.get("cells", [])[:max_cells]
+
+    except Exception as exc:
+        _LOG.warning("Subagent plan generation failed: %s", exc)
+        # Fallback: basic analysis of relevant columns
+        cells_code = []
+        if relevant_cols:
+            col = relevant_cols[0]
+            cells_code.append(f'print(df["{col}"].describe())')
+            if len(relevant_cols) >= 2:
+                col2 = relevant_cols[1]
+                cells_code.append(f'fig, ax = plt.subplots(figsize=(10, 6))\nax.scatter(df["{col}"], df["{col2}"], alpha=0.5)\nax.set_xlabel("{col}")\nax.set_ylabel("{col2}")\nax.set_title("{col} vs {col2}")\nplt.show()')
+
+    # --- Execute investigation cells ---
+    all_outputs = []
+    for i, code in enumerate(cells_code):
+        push_event(session_id, {
+            "type": "thinking",
+            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
+        })
+        _, outputs, error = _write_and_execute(code)
+        if not error:
+            all_outputs.append(_extract_text(outputs))
+        else:
+            # Try to fix the error once
+            try:
+                fix_response = llm.invoke([
+                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Respond with ONLY the corrected code, no explanation."),
+                    HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
+                ])
+                fixed_code = fix_response.content.strip()
+                if fixed_code.startswith("```"):
+                    fixed_code = fixed_code.split("\n", 1)[1] if "\n" in fixed_code else fixed_code[3:]
+                    if fixed_code.endswith("```"):
+                        fixed_code = fixed_code[:-3]
+                    fixed_code = fixed_code.strip()
+                push_event(session_id, {"type": "backtrack", "reason": f"Fixing error in investigation: {error[:100]}"})
+                _, fix_outputs, fix_error = _write_and_execute(fixed_code)
+                if not fix_error:
+                    all_outputs.append(_extract_text(fix_outputs))
+            except Exception:
+                pass
+
+    # --- Synthesize conclusion ---
+    combined_output = "\n---\n".join(all_outputs[:5])
+    try:
+        conclusion_response = llm.invoke([
+            SystemMessage(content="You are concluding a data investigation. Write ONE specific, quantitative sentence about what was found. Include numbers. If the hypothesis was confirmed, say so. If refuted, say so."),
+            HumanMessage(content=f"Hypothesis: {hypothesis_title}\n\nEvidence from {len(all_outputs)} analysis steps:\n{combined_output[:3000]}"),
+        ])
+        result.finding = conclusion_response.content.strip()
+
+        # Estimate confidence based on how much evidence we gathered
+        result.confidence = min(0.95, 0.3 + 0.15 * len(all_outputs))
+
+    except Exception:
+        if all_outputs:
+            result.finding = f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps."
+        else:
+            result.finding = f"Could not investigate '{hypothesis_title}' due to errors."
+        result.confidence = 0.3
+
+    _LOG.info("Subagent %s complete: %s (confidence=%.2f)",
+              hypothesis_id, result.finding[:80], result.confidence)
+    return result
