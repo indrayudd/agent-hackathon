@@ -59,7 +59,7 @@ def get_settings() -> Settings:
     """
     settings = Settings(
         provider=os.getenv("LLM_PROVIDER", "openai"),
-        model=os.getenv("LLM_MODEL", "gpt-5-nano"),
+        model=os.getenv("LLM_MODEL", "gpt-5.4-nano-2026-03-17"),
         temperature=float(os.getenv("LLM_TEMP", 0.2)),
         timeout=float(os.getenv("LLM_TIMEOUT", 60)),
         max_retries=int(os.getenv("LLM_MAX_RETRIES", 2)),
@@ -71,22 +71,22 @@ def get_gate_model() -> str:
     """
     Return the model name for lightweight LLM gate decisions.
 
-    Reads from env var ``EDA_GATE_MODEL``; defaults to ``"gpt-4.1-mini"``.
+    Reads from env var ``EDA_GATE_MODEL``; defaults to ``"gpt-5.4-nano-2026-03-17"``.
 
     :return: model name string
     """
-    return os.getenv("EDA_GATE_MODEL", "gpt-4.1-mini")
+    return os.getenv("EDA_GATE_MODEL", "gpt-5.4-nano-2026-03-17")
 
 
 def get_agent_model() -> str:
     """
     Return the model name for agent / heavy LLM calls.
 
-    Reads from env var ``EDA_AGENT_MODEL``; defaults to ``"gpt-4.1"``.
+    Reads from env var ``EDA_AGENT_MODEL``; defaults to ``"gpt-5.4-nano-2026-03-17"``.
 
     :return: model name string
     """
-    return os.getenv("EDA_AGENT_MODEL", "gpt-4.1")
+    return os.getenv("EDA_AGENT_MODEL", "gpt-5.4-nano-2026-03-17")
 
 
 @lru_cache(maxsize=1)

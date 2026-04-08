@@ -35,6 +35,7 @@ class AgentState:
     phases_completed: list[str] = field(default_factory=list)
     cell_count: int = 0
     cell_phases: dict[str, str] = field(default_factory=dict)  # cell_id -> phase
+    cell_registry: list[dict] = field(default_factory=list)  # ordered cell records
     knowledge_graph: object = None  # KnowledgeGraph instance, set after investigation
 
     def add_finding(self, phase: str, finding: str):
@@ -50,6 +51,23 @@ class AgentState:
     def next_cell_id(self) -> str:
         self.cell_count += 1
         return f"cell_{self.cell_count}"
+
+    def register_cell(self, cell_id: str, cell_type: str, source: str, outputs: list[dict] | None = None):
+        """Record a cell for later notebook serialization."""
+        # Overwrite if cell already exists (e.g. after fix/backtrack)
+        for entry in self.cell_registry:
+            if entry["id"] == cell_id:
+                entry["source"] = source
+                entry["cell_type"] = cell_type
+                if outputs is not None:
+                    entry["outputs"] = outputs
+                return
+        self.cell_registry.append({
+            "id": cell_id,
+            "cell_type": cell_type,
+            "source": source,
+            "outputs": outputs or [],
+        })
 
     def summarize(self) -> str:
         lines = [f"EDA complete on {self.dataset_path}"]

@@ -3,8 +3,7 @@ import { useCallback } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { useStoryStore } from "@/stores/storyStore";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+import { API_BASE } from "@/lib/backend";
 
 export function useChat(sessionId: string) {
   const sendMessage = useCallback(
@@ -58,7 +57,7 @@ export function useChat(sessionId: string) {
           }
         } else {
           useChatStore.getState().addAgentMessage(
-            "Sorry, I couldn't process that request.",
+            "Unable to process that request.",
             "text"
           );
         }

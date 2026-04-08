@@ -16,23 +16,23 @@ export default function CellToolbar({
   onMoveDown,
 }: Props) {
   const btnClass =
-    "px-2 py-0.5 text-xs text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors";
+    "p-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors";
 
   return (
-    <div className="flex items-center gap-1 py-1 px-2">
-      <button className={btnClass} onClick={onRun} title="Run cell">
-        &#9654;
+    <div className="flex items-center gap-0.5 py-1 px-2">
+      <button className={`${btnClass} hover:text-primary`} onClick={onRun} title="Run cell">
+        <span className="material-symbols-outlined text-[18px]">play_arrow</span>
       </button>
       <button className={btnClass} onClick={onMoveUp} title="Move up">
-        &uarr;
+        <span className="material-symbols-outlined text-[18px]">keyboard_arrow_up</span>
       </button>
       <button className={btnClass} onClick={onMoveDown} title="Move down">
-        &darr;
+        <span className="material-symbols-outlined text-[18px]">keyboard_arrow_down</span>
       </button>
-      <button className={btnClass} onClick={onDelete} title="Delete cell">
-        &#128465;
+      <button className={`${btnClass} hover:text-error`} onClick={onDelete} title="Delete cell">
+        <span className="material-symbols-outlined text-[18px]">delete</span>
       </button>
-      <span className="ml-auto text-[10px] text-gray-400 uppercase tracking-wide">
+      <span className="ml-auto text-[10px] text-outline font-body uppercase tracking-wide">
         {cellType}
       </span>
     </div>

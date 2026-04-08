@@ -25,9 +25,11 @@ interface NotebookState {
   agentActivity: AgentActivity;
   agentActivityDetail: string;
   activityLog: ActivityLogEntry[];
+  fixedCellIds: Set<string>;
   setCells: (cells: Cell[]) => void;
   addCell: (index: number, type: "code" | "markdown") => void;
-  appendCell: (cell: Cell) => void;
+  appendCell: (cell: Cell, options?: { markFixed?: boolean }) => void;
+  overwriteCell: (id: string, source: string) => void;
   updateCellSource: (id: string, source: string) => void;
   updateCellOutputs: (id: string, outputs: Cell["outputs"]) => void;
   deleteCell: (id: string) => void;
@@ -46,8 +48,8 @@ interface NotebookState {
   addChatAction: (detail: string, actionType: string) => void;
   clearActivityLog: () => void;
   resetForNewSession: () => void;
-  activeTab: "notebook" | "story";
-  setActiveTab: (tab: "notebook" | "story") => void;
+  activeTab: "notebook" | "story" | "history";
+  setActiveTab: (tab: "notebook" | "story" | "history") => void;
 }
 
 export const useNotebookStore = create<NotebookState>((set) => ({
@@ -60,7 +62,13 @@ export const useNotebookStore = create<NotebookState>((set) => ({
   agentActivity: "idle" as AgentActivity,
   agentActivityDetail: "",
   activityLog: [],
-  setCells: (cells) => set({ cells, dirty: false }),
+  fixedCellIds: new Set<string>(),
+  setCells: (cells) => {
+    // Deduplicate by ID, keeping last occurrence
+    const seen = new Map<string, Cell>();
+    for (const cell of cells) seen.set(cell.id, cell);
+    return set({ cells: Array.from(seen.values()), dirty: false });
+  },
   addCell: (index, type) =>
     set((s) => {
       const cell: Cell = { id: uuidv4(), cell_type: type, source: "", outputs: [], execution_count: null };
@@ -68,10 +76,92 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       cells.splice(index, 0, cell);
       return { cells, dirty: true };
     }),
-  appendCell: (cell) =>
+  appendCell: (cell, options) =>
     set((s) => {
       if (s.cells.some((c) => c.id === cell.id)) return s;
-      return { cells: [...s.cells, cell] };
+      // Filter out intermediary agent status markdown cells
+      if (cell.cell_type === "markdown") {
+        const src = cell.source.trim();
+        const skipPatterns = [
+          /^Attempting fix/i,
+          /^Backtracking/i,
+          /^Retrying/i,
+          /^Error:/i,
+          /^Fixing/i,
+          /^Let me (try|fix|correct)/i,
+          /^I('ll| will) (try|fix|correct|retry)/i,
+          /^##\s+Conclusions[\s\S]*Synthesizing all findings/i,
+          /^##\s+Investigation Phase[\s\S]*Generating hypotheses/i,
+        ];
+        if (skipPatterns.some((p) => p.test(src))) return s;
+      }
+      const nextState: Partial<NotebookState> = { cells: [...s.cells, cell] };
+      if (options?.markFixed) {
+        const fixedCellIds = new Set(s.fixedCellIds);
+        fixedCellIds.add(cell.id);
+        nextState.fixedCellIds = fixedCellIds;
+        setTimeout(() => {
+          useNotebookStore.setState((prev) => {
+            const next = new Set(prev.fixedCellIds);
+            next.delete(cell.id);
+            return { fixedCellIds: next };
+          });
+        }, 2000);
+      }
+      return nextState as { cells: Cell[] } & Partial<NotebookState>;
+    }),
+  overwriteCell: (id, source) =>
+    set((s) => {
+      const idx = s.cells.findIndex((c) => c.id === id);
+      if (idx < 0) {
+        const fixedCellIds = new Set(s.fixedCellIds);
+        fixedCellIds.add(id);
+        setTimeout(() => {
+          useNotebookStore.setState((prev) => {
+            const next = new Set(prev.fixedCellIds);
+            next.delete(id);
+            return { fixedCellIds: next };
+          });
+        }, 2000);
+        return {
+          cells: [
+            ...s.cells,
+            {
+              id,
+              cell_type: "code",
+              source,
+              outputs: [],
+              execution_count: null,
+              error: null,
+              executing: false,
+            },
+          ],
+          dirty: true,
+          fixedCellIds,
+        };
+      }
+      const updated = {
+        ...s.cells[idx],
+        source,
+        outputs: [] as Cell["outputs"],
+        error: null,
+        execution_count: null,
+        executing: false,
+      };
+      const cells = [...s.cells];
+      cells[idx] = updated;
+      // Track this cell as recently fixed
+      const fixedCellIds = new Set(s.fixedCellIds);
+      fixedCellIds.add(id);
+      // Auto-clear after 2 seconds
+      setTimeout(() => {
+        useNotebookStore.setState((prev) => {
+          const next = new Set(prev.fixedCellIds);
+          next.delete(id);
+          return { fixedCellIds: next };
+        });
+      }, 2000);
+      return { cells, dirty: true, fixedCellIds };
     }),
   updateCellSource: (id, source) =>
     set((s) => ({
@@ -165,8 +255,9 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       agentActivityDetail: "",
       activityLog: [],
       hypothesisGroups: [],
-      activeTab: "notebook" as "notebook" | "story",
+      fixedCellIds: new Set<string>(),
+      activeTab: "notebook" as "notebook" | "story" | "history",
     }),
-  activeTab: "notebook" as "notebook" | "story",
+  activeTab: "notebook" as "notebook" | "story" | "history",
   setActiveTab: (activeTab) => set({ activeTab }),
 }));

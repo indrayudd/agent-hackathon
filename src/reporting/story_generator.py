@@ -15,6 +15,7 @@ import pydantic
 
 import src.config.config as cconf
 import src.tools.input_tools as tinptool
+from src.reporting.plot_contract import normalize_plot_artifacts
 
 _LOG = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class StorySection(pydantic.BaseModel):
     prose: str = pydantic.Field(
         description="Narrative paragraph(s) for this section.",
     )
-    key_plots: list[str] = pydantic.Field(
+    plots: list[str] = pydantic.Field(
         default_factory=list,
         description="Paths to the most informative plot PNGs for this section.",
     )
@@ -175,7 +176,7 @@ def _build_story_prompt(state: dict, available_plots: list[str]) -> str:
 
     parts.append(
         "\nProduce a structured story with: executive_summary, "
-        "sections (each with title, prose, key_plots from the available list, "
+        "sections (each with title, prose, plots from the available list, "
         "and insight_cards), and recommendations."
     )
 
@@ -199,10 +200,14 @@ def _story_to_markdown(story: Story) -> str:
         lines.append(f"\n## {section.title}\n")
         lines.append(section.prose + "\n")
 
-        if section.key_plots:
+        if section.plots:
             lines.append("\n**Key Visualizations:**\n")
-            for plot in section.key_plots:
-                lines.append(f"![{section.title}]({plot})\n")
+            for plot in section.plots:
+                if isinstance(plot, dict):
+                    source = str(plot.get("source") or plot.get("payload") or "")
+                else:
+                    source = str(plot)
+                lines.append(f"![{section.title}]({source})\n")
 
         if section.insight_cards:
             lines.append("\n**Insights:**\n")
@@ -260,7 +265,7 @@ def run_story_generation(state: dict) -> dict:
                         f"Series type: {state.get('type', 'unknown')}. "
                         f"Frequency: {state.get('expected_frequency', 'unknown')}."
                     ),
-                    key_plots=available_plots[:3],
+                    plots=available_plots[:3],
                     insight_cards=[],
                 ),
             ],
@@ -270,6 +275,12 @@ def run_story_generation(state: dict) -> dict:
     # Write outputs
     trace_dir = tinptool._trace_root()
     story_dict = story.model_dump()
+    for section in story_dict.get("sections", []):
+        section["plots"] = normalize_plot_artifacts(
+            section.get("plots") or [],
+            title=section.get("title", ""),
+            caption=section.get("subtitle", ""),
+        )
 
     # JSON output
     json_path = trace_dir / "story.json"

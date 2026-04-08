@@ -66,6 +66,15 @@ def _bullet_list(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def _plot_spec_emit_block(spec_expr: str) -> str:
+    return (
+        "\ntry:\n"
+        f"    emit_plot_spec({spec_expr})\n"
+        "except NameError:\n"
+        "    pass\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-phase cell builders
 # ---------------------------------------------------------------------------
@@ -105,12 +114,22 @@ def _setup_cells(state: dict) -> list[nbformat.NotebookNode]:
         "import pandas as pd\n"
         "import numpy as np\n"
         "import matplotlib.pyplot as plt\n"
+        "import json\n"
         "import warnings\n"
         "warnings.filterwarnings('ignore')\n"
+        "from IPython.display import display\n"
         "\n"
         f"df = pd.read_csv(r\"{dataset_path}\")\n"
         "print(f\"Shape: {df.shape}\")\n"
-        "df.head()"
+        "df.head()\n"
+        "\n"
+        "PLOT_SPEC_MIME = \"application/vnd.agenticeda.plot-spec+json\"\n"
+        "\n"
+        "def emit_plot_spec(payload):\n"
+        "    try:\n"
+        "        display({PLOT_SPEC_MIME: json.dumps(payload, default=str)}, raw=True)\n"
+        "    except Exception:\n"
+        "        return None\n"
     )
     return [_md("## Setup"), _code(code)]
 
@@ -184,16 +203,30 @@ def _phase_4_cells(state: dict) -> list[nbformat.NotebookNode]:
     if plot_cols:
         col_list = ", ".join(f"'{c}'" for c in plot_cols)
         cells.append(_code(
-            f"fig, axes = plt.subplots(len([{col_list}]), 1, "
-            f"figsize=(14, 3 * len([{col_list}])), sharex=True)\n"
+            f"plot_cols = [{col_list}]\n"
+            f"fig, axes = plt.subplots(len(plot_cols), 1, "
+            f"figsize=(14, 3 * len(plot_cols)), sharex=True)\n"
             f"if not hasattr(axes, '__len__'):\n"
             f"    axes = [axes]\n"
-            f"for ax, col in zip(axes, [{col_list}]):\n"
+            f"for ax, col in zip(axes, plot_cols):\n"
             f"    ax.plot(df['{time_col}'], df[col], linewidth=0.7)\n"
             f"    ax.set_ylabel(col)\n"
             f"plt.xlabel('{time_col}')\n"
             f"plt.tight_layout()\n"
-            f"plt.show()"
+            f"plt.show()\n"
+            f"{_plot_spec_emit_block(f'''{{\n"
+            f'    "chart_family": "line",\n'
+            f'    "semantic_intent": "trend",\n'
+            f'    "x_axis_role": "time",\n'
+            f'    "y_axis_role": "measure",\n'
+            f'    "x_axis_label": "{time_col}",\n'
+            f'    "y_axis_label": "value",\n'
+            f'    "trace_count": len(plot_cols),\n'
+            f'    "series": [\n'
+            f'        {{"label": col, "x": df["{time_col}"].astype(str).tolist(), "y": df[col].tolist()}}\n'
+            f'        for col in plot_cols\n'
+            f'    ],\n'
+            f'}}''')}"
         ))
 
     return cells
@@ -244,7 +277,21 @@ def _phase_5_cells(state: dict) -> list[nbformat.NotebookNode]:
         f"ax.legend()\n"
         f"ax.set_title(f'Rolling statistics: {{col}}')\n"
         f"plt.tight_layout()\n"
-        f"plt.show()"
+        f"plt.show()\n"
+        f"{_plot_spec_emit_block(f'''{{\n"
+        f'    "chart_family": "line",\n'
+        f'    "semantic_intent": "trend",\n'
+        f'    "x_axis_role": "time",\n'
+        f'    "y_axis_role": "measure",\n'
+        f'    "x_axis_label": "{time_col}",\n'
+        f'    "y_axis_label": "{first_col}",\n'
+        f'    "trace_count": 3,\n'
+        f'    "series": [\n'
+        f'        {{"label": "Raw", "x": df["{time_col}"].astype(str).tolist(), "y": df[col].tolist()}},\n'
+        f'        {{"label": f"{{window}}-pt Rolling Mean", "x": df["{time_col}"].astype(str).tolist(), "y": rolling_mean.tolist()}},\n'
+        f'        {{"label": "+/- 1 Std", "x": df["{time_col}"].astype(str).tolist(), "y": rolling_std.tolist()}},\n'
+        f'    ],\n'
+        f'}}''')}"
     ))
 
     return cells
@@ -279,7 +326,20 @@ def _phase_6_cells(state: dict) -> list[nbformat.NotebookNode]:
             f"sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', ax=ax)\n"
             f"ax.set_title('Correlation Heatmap')\n"
             f"plt.tight_layout()\n"
-            f"plt.show()"
+            f"plt.show()\n"
+            f"{_plot_spec_emit_block('''{\n"
+            f'    "chart_family": "heatmap",\n'
+            f'    "semantic_intent": "matrix",\n'
+            f'    "x_axis_role": "category",\n'
+            f'    "y_axis_role": "category",\n'
+            f'    "x_axis_label": "Variables",\n'
+            f'    "y_axis_label": "Variables",\n'
+            f'    "trace_count": 1,\n'
+            f'    "matrix": {{\n'
+            f'        "labels": corr.columns.tolist(),\n'
+            f'        "values": corr.values.tolist(),\n'
+            f'    }},\n'
+            f'}}''')}"
         ))
 
     return cells
@@ -396,7 +456,20 @@ def _phase_9_cells(state: dict) -> list[nbformat.NotebookNode]:
             f"ax.legend()\n"
             f"ax.set_title('Split boundaries')\n"
             f"plt.tight_layout()\n"
-            f"plt.show()"
+            f"plt.show()\n"
+            f"{_plot_spec_emit_block(f'''{{\n"
+            f'    "chart_family": "line",\n'
+            f'    "semantic_intent": "trend",\n'
+            f'    "x_axis_role": "time",\n'
+            f'    "y_axis_role": "measure",\n'
+            f'    "x_axis_label": "{time_col}",\n'
+            f'    "y_axis_label": "split marker",\n'
+            f'    "trace_count": {2 if val_end else 1},\n'
+            f'    "series": [\n'
+            f'        {{"label": "train end", "x": ["{train_end}"], "y": [0]}},\n'
+            f'        {{"label": "val end", "x": ["{val_end}"], "y": [0]}},\n'
+            f'    ],\n'
+            f'}}''')}"
         ))
 
     return cells
@@ -452,7 +525,17 @@ def _phase_10_cells(state: dict) -> list[nbformat.NotebookNode]:
             f"ax.set_xlabel('Importance')\n"
             f"ax.set_title('Feature Importance (top 15)')\n"
             f"plt.tight_layout()\n"
-            f"plt.show()"
+            f"plt.show()\n"
+            f"{_plot_spec_emit_block(f'''{{\n"
+            f'    "chart_family": "bar",\n'
+            f'    "semantic_intent": "comparison",\n'
+            f'    "x_axis_role": "numeric",\n'
+            f'    "y_axis_role": "category",\n'
+            f'    "x_axis_label": "Importance",\n'
+            f'    "y_axis_label": "Feature",\n'
+            f'    "trace_count": 1,\n'
+            f'    "series": [{{"label": "Feature Importance", "x": scores[::-1], "y": names[::-1]}}],\n'
+            f'}}''')}"
         ))
 
     return cells

@@ -40,6 +40,8 @@ Rules:
 - Use ONLY column names from the list above — do NOT invent column names
 - The variable `df` is already loaded
 - Keep the fix focused on the error
+- If the corrected cell includes a plot, also emit emit_plot_spec(...) so the
+  hidden report spec stays aligned with the visible chart
 
 Respond with EXACTLY this JSON (no markdown fencing):
 {{"thinking": "what went wrong and how I'm fixing it", "code": "corrected python code", "cell_type": "code", "phase": "{current_phase}", "follow_up": false}}"""
@@ -59,6 +61,8 @@ Rules:
 - NEVER re-describe the data. If you learned what you need, set follow_up=false
 - Use ONLY column names from the list above
 - Most of the time, follow_up should be FALSE — only set true for real surprises
+- If you do generate a plot, also emit emit_plot_spec(...) with the hidden
+  chart spec (family, intent, axis roles, and series/matrix data).
 
 Respond with EXACTLY this JSON (no markdown fencing):
 {{"thinking": "brief reasoning", "code": "python code or empty", "cell_type": "code", "phase": "{current_phase}", "follow_up": false}}"""

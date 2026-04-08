@@ -17,45 +17,82 @@ export default function VersionItem({
   onRestore,
   restoring,
 }: Props) {
+  const triggerLower = trigger.toLowerCase();
+  const isSystem = triggerLower.includes("system") || triggerLower.includes("auto");
+  const isStable = triggerLower.includes("stable");
+
   return (
-    <div className="flex items-start gap-3 py-3">
-      {/* Timeline indicator */}
-      <div className="flex flex-col items-center pt-1">
-        <span
-          className={`inline-block w-3 h-3 rounded-full border-2 ${
-            isCurrent
-              ? "bg-blue-600 border-blue-600"
-              : "bg-white border-gray-400"
-          }`}
-        />
-        <div className="w-px flex-grow bg-gray-200 mt-1" />
+    <div className="flex items-start gap-4 relative pl-2">
+      {/* Circle indicator */}
+      <div
+        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 z-10 ${
+          isCurrent
+            ? "bg-primary-container text-on-primary-container"
+            : "bg-surface-container-low text-outline"
+        }`}
+      >
+        <span className="material-symbols-outlined text-lg">
+          {isCurrent ? "star" : "history"}
+        </span>
       </div>
 
-      {/* Content */}
-      <div className="flex-grow min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-gray-800">
-            v{versionId}
-          </span>
-          {isCurrent && (
-            <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-              Current
+      {/* Card */}
+      <div
+        className={`flex-1 min-w-0 rounded-xl p-4 transition-colors ${
+          isCurrent
+            ? "bg-white border-l-4 border-primary shadow-sm"
+            : "bg-surface-container-low hover:bg-surface-container-high"
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm font-semibold text-on-surface font-headline">
+              Version {versionId}
             </span>
+            {isCurrent && (
+              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-container text-on-primary-container">
+                Current
+              </span>
+            )}
+          </div>
+
+          {!isCurrent && (
+            <button
+              onClick={onRestore}
+              disabled={restoring}
+              className="flex items-center gap-1 text-xs text-primary hover:underline disabled:text-outline disabled:no-underline transition-colors shrink-0"
+            >
+              <span className="material-symbols-outlined text-sm">settings_backup_restore</span>
+              {restoring ? "Restoring..." : "Restore"}
+            </button>
           )}
         </div>
-        <p className="text-sm text-gray-600 truncate">{trigger}</p>
-        <p className="text-xs text-gray-400">
-          {new Date(timestamp).toLocaleString()}
-        </p>
-        {!isCurrent && (
-          <button
-            onClick={onRestore}
-            disabled={restoring}
-            className="mt-1 text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400 transition-colors"
-          >
-            {restoring ? "Restoring..." : "Restore"}
-          </button>
-        )}
+
+        <p className="text-xs text-on-surface-variant mt-1 truncate font-body">{trigger}</p>
+
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-[10px] text-on-surface-variant font-mono">
+            {new Date(timestamp).toLocaleString()}
+          </span>
+
+          {/* Tags */}
+          <div className="flex items-center gap-1">
+            {isSystem ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-container text-on-surface-variant">
+                System
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-container-highest text-on-surface">
+                User
+              </span>
+            )}
+            {isStable && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary-fixed text-on-secondary-container">
+                Stable
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

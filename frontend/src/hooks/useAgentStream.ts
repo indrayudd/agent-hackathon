@@ -3,10 +3,22 @@ import { useEffect, useRef } from "react";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { useStoryStore } from "@/stores/storyStore";
 import { useChatStore } from "@/stores/chatStore";
-import type { Cell } from "@/lib/types";
+import type { Cell, CellOutput } from "@/lib/types";
+import { API_BASE, WS_BASE } from "@/lib/backend";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-const WS_BASE = API_BASE.replace(/^http/, "ws");
+type StreamEvent =
+  | { type: "thinking"; content?: string }
+  | { type: "cell_write"; cell_id: string; cell_type?: "code" | "markdown"; source?: string; overwrite?: boolean }
+  | { type: "cell_executing"; cell_id: string }
+  | { type: "cell_output"; cell_id: string; outputs?: CellOutput[] }
+  | { type: "cell_error"; cell_id: string; error?: string; traceback?: string[] | string[][] }
+  | { type: "cell_update"; cell_id: string; source?: string }
+  | { type: "cell_delete"; cell_id: string }
+  | { type: "cell_reorder"; cell_id: string; direction?: "up" | "down" }
+  | { type: "chat_action"; detail?: string; action?: string; cell_id?: string }
+  | { type: "phase_transition"; phase?: string; notebook_id?: string }
+  | { type: "backtrack"; reason?: string; cell_id?: string }
+  | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
   const connected = useRef<string | null>(null);
@@ -26,14 +38,12 @@ export function useAgentStream(sessionId: string) {
       ws.current = socket;
 
       socket.onopen = () => {
-        useNotebookStore.getState().setPipelineRunning(true);
-        useNotebookStore.getState().clearActivityLog();
-        useNotebookStore.getState().setAgentActivity("thinking", "Starting EDA analysis...");
-        useChatStore.getState().addAgentMessage("Starting EDA analysis...", "text");
+        // Don't set pipelineRunning here — the page checks run status on load.
+        // pipelineRunning will be set on the first agent event (phase_transition, cell_write, etc.)
       };
 
       socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as StreamEvent;
         const store = useNotebookStore.getState();
         const chat = useChatStore.getState();
 
@@ -57,9 +67,9 @@ export function useAgentStream(sessionId: string) {
               executing: false,
               error: null,
             };
-            store.appendCell(cell);
+            store.appendCell(cell, { markFixed: !!data.overwrite });
             store.setLatestThinking("");  // clear thinking when cell appears
-            store.setAgentActivity("generating", data.source || "", {
+            store.setAgentActivity(data.overwrite ? "fixing" : "generating", data.overwrite ? "Redoing failed cell with corrected code" : (data.source || ""), {
               cellId: data.cell_id,
               cellType: (data.cell_type as "code" | "markdown") || "code",
               hypothesisId: hypId,
@@ -86,7 +96,7 @@ export function useAgentStream(sessionId: string) {
             store.updateCellOutputs(data.cell_id, data.outputs || []);
             // Show brief status for significant outputs
             const outputText = (data.outputs || [])
-                .map((o: any) => o.text || o.data?.["text/plain"] || "")
+                .map((o) => o.text || o.data?.["text/plain"] || "")
                 .join("")
                 .trim();
             if (outputText && outputText.length > 10) {
@@ -106,16 +116,25 @@ export function useAgentStream(sessionId: string) {
                 traceback: Array.isArray(data.traceback) ? data.traceback.flat() : [],
               }]);
             }
-            chat.addAgentMessage("Error: " + (data.error || "Unknown error") + ". Attempting fix...", "text");
-            store.setAgentActivity("fixing", data.error || "Unknown error", { cellId: data.cell_id });
+            store.setAgentActivity("fixing", `Fixing: ${data.error || "Unknown error"}`, {
+              cellId: data.cell_id,
+              cellType: "code",
+            });
             break;
 
           case "cell_update":
-            store.updateCellSource(data.cell_id, data.source || "");
-            store.setAgentActivity("generating", `Edited cell`, { cellId: data.cell_id });
+            store.overwriteCell(data.cell_id, data.source || "");
+            store.setAgentActivity("fixing", "Overwrote cell with corrected code", {
+              cellId: data.cell_id,
+              cellType: "code",
+            });
             break;
 
           case "cell_delete":
+            store.setAgentActivity("backtracking", "Removed failed cell before retry", {
+              cellId: data.cell_id,
+              cellType: "code",
+            });
             store.deleteCell(data.cell_id);
             break;
 
@@ -131,6 +150,7 @@ export function useAgentStream(sessionId: string) {
             break;
 
           case "phase_transition":
+            store.setPipelineRunning(true);
             store.setCurrentPhase(data.phase || "");
             store.setAgentActivity("thinking", data.phase || "", {
               hypothesisId: data.notebook_id || undefined,
@@ -141,9 +161,11 @@ export function useAgentStream(sessionId: string) {
             break;
 
           case "backtrack":
-            store.setLatestThinking(`⟲ Backtracking: ${data.reason}`);
-            store.setAgentActivity("backtracking", data.reason || "");
-            chat.addAgentMessage("Backtracking: " + data.reason, "text");
+            store.setLatestThinking(`⟲ Correcting: ${data.reason}`);
+            store.setAgentActivity("backtracking", `Correcting: ${data.reason || "retrying failed cell"}`, {
+              cellId: data.cell_id,
+              cellType: "code",
+            });
             break;
 
           case "complete":

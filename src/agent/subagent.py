@@ -74,14 +74,25 @@ def run_subagent(
         cell_counter[0] += 1
         return f"{hypothesis_id}_cell_{cell_counter[0]}"
 
-    def _write_and_execute(code: str, cell_type: str = "code") -> tuple[str, list[dict], str | None]:
+    def _write_and_execute(
+        code: str,
+        cell_type: str = "code",
+        *,
+        cell_id: str | None = None,
+        overwrite: bool = False,
+    ) -> tuple[str, list[dict], str | None]:
         """Write a cell, execute it, stream events, return (cell_id, outputs, error)."""
-        cell_id = _next_cell_id()
+        cell_id = cell_id or _next_cell_id()
+        replacement = overwrite and cell_id is not None
+        if replacement:
+            push_event(session_id, {"type": "cell_delete", "cell_id": cell_id})
+            time.sleep(0.05)
         push_event(session_id, {
             "type": "cell_write",
             "cell_id": cell_id,
             "cell_type": cell_type,
             "source": code,
+            "overwrite": replacement,
         })
         time.sleep(0.05)
 
@@ -89,7 +100,7 @@ def run_subagent(
             return cell_id, [], None
 
         push_event(session_id, {"type": "cell_executing", "cell_id": cell_id})
-        outputs, error = execute_code(session_id, code, 60)
+        outputs, error = execute_code(session_id, code, 60, cell_id=cell_id)
 
         if error:
             push_event(session_id, {
@@ -101,7 +112,8 @@ def run_subagent(
             })
             # Check if outputs contain plots
             for o in outputs:
-                if o.get("data", {}).get("image/png"):
+                data = o.get("data", {})
+                if data.get("image/png") or data.get("application/vnd.plotly.v1+json"):
                     result.plot_cell_ids.append(cell_id)
                     break
 
@@ -140,6 +152,9 @@ Rules:
 - Each cell should be focused on ONE analysis step
 - Use ONLY columns from the available list
 - Include matplotlib plots where relevant (always plt.show())
+- When a cell makes a plot, also call emit_plot_spec(...) with a hidden
+  structured payload that includes chart_family, semantic_intent, axis roles,
+  and the data needed to redraw the figure in the report. Do not print it.
 - Print findings clearly with numbers
 - The cells should PROGRESSIVELY build toward answering the hypothesis
 - Include statistical tests where appropriate (scipy.stats, etc.)
@@ -168,7 +183,18 @@ Respond with JSON (no markdown fencing):
             cells_code.append(f'print(df["{col}"].describe())')
             if len(relevant_cols) >= 2:
                 col2 = relevant_cols[1]
-                cells_code.append(f'fig, ax = plt.subplots(figsize=(10, 6))\nax.scatter(df["{col}"], df["{col2}"], alpha=0.5)\nax.set_xlabel("{col}")\nax.set_ylabel("{col2}")\nax.set_title("{col} vs {col2}")\nplt.show()')
+                cells_code.append(
+                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
+                    f'ax.scatter(df["{col}"], df["{col2}"], alpha=0.5)\n'
+                    f'ax.set_xlabel("{col}")\n'
+                    f'ax.set_ylabel("{col2}")\n'
+                    f'ax.set_title("{col} vs {col2}")\n'
+                    f'plt.show()\n'
+                    f'try:\n'
+                    f'    emit_plot_spec({{"chart_family": "scatter", "semantic_intent": "relationship", "x_axis_role": "numeric", "y_axis_role": "numeric", "x_axis_label": "{col}", "y_axis_label": "{col2}", "trace_count": 1, "series": [{{"label": "{col} vs {col2}", "x": df["{col}"].dropna().tolist(), "y": df["{col2}"].dropna().tolist()}}]}})\n'
+                    f'except NameError:\n'
+                    f'    pass'
+                )
 
     # --- Execute investigation cells ---
     all_outputs = []
@@ -177,7 +203,7 @@ Respond with JSON (no markdown fencing):
             "type": "thinking",
             "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
         })
-        _, outputs, error = _write_and_execute(code)
+        failed_cell_id, outputs, error = _write_and_execute(code)
         if not error:
             all_outputs.append(_extract_text(outputs))
         else:
@@ -193,8 +219,16 @@ Respond with JSON (no markdown fencing):
                     if fixed_code.endswith("```"):
                         fixed_code = fixed_code[:-3]
                     fixed_code = fixed_code.strip()
-                push_event(session_id, {"type": "backtrack", "reason": f"Fixing error in investigation: {error[:100]}"})
-                _, fix_outputs, fix_error = _write_and_execute(fixed_code)
+                push_event(session_id, {
+                    "type": "backtrack",
+                    "reason": f"Correcting error in investigation: {error[:100]}",
+                    "cell_id": failed_cell_id,
+                })
+                _, fix_outputs, fix_error = _write_and_execute(
+                    fixed_code,
+                    cell_id=failed_cell_id,
+                    overwrite=True,
+                )
                 if not fix_error:
                     all_outputs.append(_extract_text(fix_outputs))
             except Exception:

@@ -1,17 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useState } from "react";
 import { useNotebookStore } from "@/stores/notebookStore";
 import type { ActivityLogEntry } from "@/stores/notebookStore";
 import {
   summarizeCellSource,
   ACTIVITY_CONFIG,
+  getActivityDetail,
+  getActivityLabel,
+  isNarrationUpdate,
   HypothesisIcon,
   MarkdownIcon,
   CodeIcon,
+  CheckIcon,
 } from "./activityUtils";
-
-/* ── Helpers ────────────────────────────────────────────── */
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
@@ -19,11 +21,9 @@ function formatTime(ts: number): string {
 }
 
 function scrollToCell(cellId: string) {
-  // Switch to notebook tab if not already there
   const store = useNotebookStore.getState();
   if (store.activeTab !== "notebook") {
     store.setActiveTab("notebook");
-    // Wait for React to render the notebook pane before scrolling
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         doScroll(cellId);
@@ -38,8 +38,8 @@ function doScroll(cellId: string) {
   const el = document.getElementById(`cell-${cellId}`);
   if (el) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("ring-2", "ring-blue-400", "ring-offset-2");
-    setTimeout(() => el.classList.remove("ring-2", "ring-blue-400", "ring-offset-2"), 1500);
+    el.classList.add("ring-2", "ring-primary/40", "ring-offset-2", "activity-highlight");
+    setTimeout(() => el.classList.remove("ring-2", "ring-primary/40", "ring-offset-2", "activity-highlight"), 1500);
   }
 }
 
@@ -51,16 +51,42 @@ function isCellNode(entry: ActivityLogEntry): boolean {
   return entry.activity === "generating" && !!entry.cellId;
 }
 
-/* ── Entry components ───────────────────────────────────── */
-
-function InvestigationHeader({ entry }: { entry: ActivityLogEntry }) {
+function isSynthesisEntry(entry: ActivityLogEntry): boolean {
   return (
-    <div className="flex items-start gap-2 mt-3 mb-1">
-      {/* Dot */}
-      <div className="relative flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-purple-100 ring-2 ring-purple-200">
-        <HypothesisIcon className="w-3 h-3 text-purple-600" />
+    (entry.activity === "thinking" && isNarrationUpdate(entry.detail)) ||
+    (entry.activity === "generating" && !entry.cellId && isNarrationUpdate(entry.detail))
+  );
+}
+
+function isRecoveryEntry(entry: ActivityLogEntry): boolean {
+  return entry.activity === "fixing" || entry.activity === "backtracking";
+}
+
+function formatRelativePhase(phase: string): string {
+  return phase ? phase.replace(/^Chat Investigation:\s*/i, "") : "";
+}
+
+function renderGlyph(glyph: string, className: string) {
+  return (
+    <span className={`material-symbols-outlined ${className}`} style={{ fontVariationSettings: '"FILL" 1' }}>
+      {glyph}
+    </span>
+  );
+}
+
+function InvestigationHeader({ entry, index }: { entry: ActivityLogEntry; index: number }) {
+  return (
+    <div
+      className="flex items-start gap-2 mt-3 mb-1 animate-activity-in"
+      style={{ animationDelay: `${index * 18}ms` }}
+    >
+      <div className="relative flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary-fixed ring-2 ring-primary-fixed-dim shadow-sm">
+        <HypothesisIcon className="w-3.5 h-3.5 text-on-primary-fixed-variant" />
       </div>
-      <p className="text-xs font-semibold text-purple-700 leading-5">{entry.detail}</p>
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.24em] text-on-surface-variant">Investigation</p>
+        <p className="text-xs font-semibold text-primary leading-5">{entry.detail}</p>
+      </div>
     </div>
   );
 }
@@ -68,46 +94,47 @@ function InvestigationHeader({ entry }: { entry: ActivityLogEntry }) {
 function CellCard({
   entry,
   isLast,
+  index,
 }: {
   entry: ActivityLogEntry;
   isLast: boolean;
+  index: number;
 }) {
-  const isHypothesis = !!entry.hypothesisId;
-  const dotColor = isHypothesis ? "bg-purple-500" : "bg-blue-500";
-  const borderColor = isHypothesis
-    ? "border-purple-200 hover:border-purple-300"
-    : "border-gray-200 hover:border-blue-300";
-  const lineColor = isHypothesis ? "bg-purple-200" : "bg-gray-200";
-  const CellIcon = entry.cellType === "markdown" ? MarkdownIcon : CodeIcon;
-  const iconColor = isHypothesis ? "text-purple-500" : "text-blue-500";
-
-  const summary = summarizeCellSource(entry.detail, entry.cellType);
+  const cellType = entry.cellType ?? "code";
+  const summary = summarizeCellSource(entry.detail, cellType);
+  const CellIcon = cellType === "markdown" ? MarkdownIcon : CodeIcon;
+  const cfg = ACTIVITY_CONFIG[entry.activity];
 
   return (
-    <div className="flex items-stretch gap-0 relative">
-      {/* Timeline rail */}
+    <div className="flex items-stretch gap-0 relative animate-activity-in" style={{ animationDelay: `${index * 18}ms` }}>
       <div className="flex flex-col items-center w-5 flex-shrink-0">
-        <div className={`w-0.5 flex-grow ${lineColor}`} />
+        <div className="w-0.5 flex-grow bg-outline-variant/30" />
         <div
-          className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0 ${isLast ? "ring-2 ring-offset-1 " + (isHypothesis ? "ring-purple-300" : "ring-blue-300") : ""}`}
+          className={`w-3 h-3 rounded-full ${cfg.dotColor} flex-shrink-0 shadow-sm ${isLast ? "ring-2 ring-offset-1 ring-primary/30" : ""}`}
         />
-        <div className={`w-0.5 flex-grow ${lineColor}`} />
+        <div className="w-0.5 flex-grow bg-outline-variant/30" />
       </div>
-
-      {/* Card */}
       <button
         onClick={() => entry.cellId && scrollToCell(entry.cellId)}
-        className={`flex-1 ml-1.5 my-0.5 p-1.5 rounded border ${borderColor} bg-white text-left transition-colors cursor-pointer`}
+        className={`flex-1 ml-1.5 my-0.5 rounded-2xl border text-left shadow-sm transition-all duration-200 cursor-pointer hover:-translate-y-0.5 hover:shadow-md ${cfg.cardClass}`}
       >
-        <div className="flex items-center gap-1.5">
-          <CellIcon className={`w-3.5 h-3.5 flex-shrink-0 ${iconColor}`} />
-          <span className="text-[11px] text-gray-800 font-medium truncate">{summary}</span>
-        </div>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[9px] text-gray-400">{formatTime(entry.ts)}</span>
-          {entry.phase && (
-            <span className="text-[9px] text-gray-400 truncate">{entry.phase}</span>
-          )}
+        <div className="flex items-start gap-3 p-3">
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-blue-50 text-primary shadow-inner">
+            <CellIcon className="w-4 h-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-on-surface-variant">Notebook cell</span>
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-primary">
+                {cellType}
+              </span>
+            </div>
+            <p className="mt-1 text-sm font-semibold text-on-surface truncate">{summary}</p>
+            <p className="mt-1 text-[10px] text-on-surface-variant">
+              {formatTime(entry.ts)}
+              {entry.phase ? ` · ${entry.phase}` : ""}
+            </p>
+          </div>
         </div>
       </button>
     </div>
@@ -117,60 +144,89 @@ function CellCard({
 function IntermediateEntry({
   entry,
   isLast,
+  index,
 }: {
   entry: ActivityLogEntry;
   isLast: boolean;
+  index: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const cfg = ACTIVITY_CONFIG[entry.activity];
   const Icon = cfg.Icon;
-  const isHypothesis = !!entry.hypothesisId;
-  const lineStyle = isHypothesis ? "border-purple-200" : "border-gray-200";
+  const title = getActivityLabel(entry);
+  const detail = getActivityDetail(entry);
+  const recovery = isRecoveryEntry(entry);
+  const synthesis = isSynthesisEntry(entry);
+  const isComplete = entry.activity === "complete";
+  const glyph = entry.activity === "fixing" && /error/i.test(entry.detail)
+    ? "error"
+    : entry.activity === "backtracking"
+      ? "replay"
+      : synthesis
+        ? "summarize"
+        : cfg.glyph;
 
-  const isLong = entry.detail.length > 50;
-  const truncated = isLong ? entry.detail.slice(0, 50) : entry.detail;
+  const cardClasses = synthesis
+    ? "border-violet-200/90 bg-gradient-to-br from-violet-50 via-white to-sky-50"
+    : recovery
+      ? "border-rose-200/90 bg-gradient-to-br from-rose-50 via-white to-orange-50"
+      : isComplete
+        ? "border-emerald-200/90 bg-gradient-to-br from-emerald-50 via-white to-green-50"
+        : "border-outline-variant/20 bg-white/95";
 
   return (
-    <div className="flex items-start gap-0 relative">
-      {/* Timeline rail (dashed) */}
+    <div
+      className="flex items-start gap-0 relative animate-activity-in"
+      style={{ animationDelay: `${index * 18}ms` }}
+    >
       <div className="flex flex-col items-center w-5 flex-shrink-0">
-        <div className={`w-0 flex-grow border-l border-dashed ${lineStyle}`} />
+        <div className="w-0 flex-grow border-l border-dashed border-outline-variant/30" />
         <div
-          className={`w-2 h-2 rounded-full ${cfg.dotColor} flex-shrink-0 ${isLast ? "ring-1 " + cfg.ringColor : ""}`}
+          className={`w-2.5 h-2.5 rounded-full ${cfg.dotColor} flex-shrink-0 shadow-sm ${isLast ? "ring-1 " + cfg.ringColor : ""}`}
         />
-        <div className={`w-0 flex-grow border-l border-dashed ${lineStyle}`} />
+        <div className="w-0 flex-grow border-l border-dashed border-outline-variant/30" />
       </div>
-
-      {/* Content */}
-      <div className="flex-1 ml-1.5 py-0.5">
-        <div className="flex items-center gap-1">
-          <Icon className={`w-3 h-3 flex-shrink-0 ${cfg.color}`} />
-          <span className="text-[10px] text-gray-500">
-            {expanded ? entry.detail : truncated}
-            {isLong && !expanded && (
-              <button
-                onClick={() => setExpanded(true)}
-                className="text-blue-500 hover:text-blue-700 hover:underline ml-0.5"
-              >
-                &hellip;
-              </button>
-            )}
-            {isLong && expanded && (
-              <button
-                onClick={() => setExpanded(false)}
-                className="text-blue-500 hover:text-blue-700 hover:underline ml-0.5"
-              >
-                less
-              </button>
-            )}
-          </span>
+      <div className="flex-1 ml-1.5">
+        <div className={`overflow-hidden rounded-2xl border shadow-sm transition-all duration-200 ${cardClasses} ${recovery ? "ring-1 ring-rose-200/60" : ""}`}>
+          <div className={`h-1.5 bg-gradient-to-r ${cfg.accentClass} ${synthesis ? "animate-activity-sheen" : ""}`} />
+          <div className="flex items-start gap-3 p-3">
+            <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${synthesis ? "bg-violet-100 text-violet-700" : recovery ? "bg-rose-100 text-rose-700" : isComplete ? "bg-emerald-100 text-emerald-700" : "bg-surface-container-high text-primary"} shadow-inner`}>
+              {glyph ? (
+                renderGlyph(glyph, "text-[18px]")
+              ) : (
+                <Icon className={`w-4 h-4 flex-shrink-0 ${cfg.color}`} />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-semibold uppercase tracking-[0.24em] ${recovery ? "text-rose-700" : synthesis ? "text-violet-700" : isComplete ? "text-emerald-700" : "text-on-surface-variant"}`}>
+                  {title}
+                </span>
+                {entry.phase && (
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] ${recovery ? "bg-rose-100 text-rose-700" : synthesis ? "bg-violet-100 text-violet-700" : "bg-surface-container-low text-on-surface-variant"}`}>
+                    {formatRelativePhase(entry.phase)}
+                  </span>
+                )}
+              </div>
+              <p className={`mt-1 text-sm leading-5 ${recovery ? "text-rose-900" : synthesis ? "text-violet-950" : isComplete ? "text-emerald-950" : "text-on-surface-variant"}`}>
+                {detail}
+              </p>
+              {synthesis && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-violet-500 animate-pulse" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse [animation-delay:120ms]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse [animation-delay:240ms]" />
+                  <span className="text-[10px] text-on-surface-variant">Assembling the narrative</span>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function ChatActionCard({ entry, isLast }: { entry: ActivityLogEntry; isLast: boolean }) {
+function ChatActionCard({ entry, isLast, index }: { entry: ActivityLogEntry; isLast: boolean; index: number }) {
   const actionLabel =
     entry.chatAction === "edit_cell" ? "Edited" :
     entry.chatAction === "delete_cells" ? "Deleted" :
@@ -178,130 +234,170 @@ function ChatActionCard({ entry, isLast }: { entry: ActivityLogEntry; isLast: bo
     entry.chatAction === "new_cell" ? "Created" : "Action";
 
   return (
-    <div className="flex items-stretch gap-0 relative">
-      {/* Timeline rail */}
+    <div className="flex items-stretch gap-0 relative animate-activity-in" style={{ animationDelay: `${index * 18}ms` }}>
       <div className="flex flex-col items-center w-5 flex-shrink-0">
-        <div className="w-0.5 flex-grow bg-indigo-200" />
+        <div className="w-0.5 flex-grow bg-secondary-fixed-dim/40" />
         <div
-          className={`w-3 h-3 rounded-full bg-indigo-500 flex-shrink-0 ${isLast ? "ring-2 ring-offset-1 ring-indigo-300" : ""}`}
+          className={`w-3 h-3 rounded-full bg-secondary flex-shrink-0 ${isLast ? "ring-2 ring-offset-1 ring-secondary-container" : ""}`}
         />
-        <div className="w-0.5 flex-grow bg-indigo-200" />
+        <div className="w-0.5 flex-grow bg-secondary-fixed-dim/40" />
       </div>
-
-      {/* Card */}
-      <div className="flex-1 ml-1.5 my-0.5 p-1.5 rounded border border-indigo-200 bg-indigo-50 text-left">
+      <div className="flex-1 ml-1.5 my-0.5 p-3 rounded-2xl border border-secondary-fixed-dim/30 bg-gradient-to-br from-secondary-fixed/50 to-white text-left shadow-sm">
         <div className="flex items-center gap-1.5">
-          <svg className="w-3.5 h-3.5 flex-shrink-0 text-indigo-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
-            <path d="M8 5v3l2 1" />
-          </svg>
-          <span className="text-[10px] font-semibold text-indigo-700">{actionLabel}</span>
+          <span className="material-symbols-outlined text-[14px] text-secondary">edit_note</span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-on-secondary-container">{actionLabel}</span>
         </div>
-        <p className="text-[10px] text-indigo-600 mt-0.5 truncate">{entry.detail}</p>
-        <span className="text-[9px] text-indigo-400">{formatTime(entry.ts)}</span>
+        <p className="text-[10px] text-secondary mt-1 truncate">{entry.detail}</p>
+        <span className="text-[9px] text-on-surface-variant mt-1 inline-block">{formatTime(entry.ts)}</span>
       </div>
     </div>
   );
 }
 
-function CompletionBanner({ entry }: { entry: ActivityLogEntry }) {
+function CompletionBanner({ entry, index }: { entry: ActivityLogEntry; index: number }) {
   return (
-    <div className="mt-3 mb-1">
-      {/* End-of-timeline cap */}
-      <div className="flex items-center gap-0">
-        <div className="flex flex-col items-center w-5 flex-shrink-0">
-          <div className="w-0.5 h-3 bg-green-200" />
-          <div className="w-3.5 h-3.5 rounded-full bg-green-500 ring-4 ring-green-100 flex-shrink-0" />
+    <div
+      className="mt-2 mb-1 overflow-hidden rounded-2xl border border-emerald-200/90 bg-gradient-to-r from-emerald-50 via-white to-green-50 px-4 py-3 shadow-sm animate-activity-in"
+      style={{ animationDelay: `${index * 18}ms` }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 shadow-inner">
+          <CheckIcon className="w-5 h-5" />
         </div>
-        <div className="flex-1 ml-1.5" />
-      </div>
-
-      {/* Banner */}
-      <div className="ml-0 mt-2 rounded-lg bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
-            <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3.5,8 6.5,11 12.5,5" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-xs font-semibold text-green-800">{entry.detail}</p>
-            <p className="text-[9px] text-green-600 mt-0.5">{formatTime(entry.ts)}</p>
-          </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-emerald-700">
+            Analysis complete
+          </p>
+          <p className="mt-1 text-sm text-emerald-950 leading-5">{entry.detail}</p>
         </div>
       </div>
     </div>
   );
 }
 
-/* ── Main component ─────────────────────────────────────── */
+function EmptyState() {
+  return (
+    <div className="rounded-2xl border border-dashed border-outline-variant/30 bg-surface-container-low/60 px-4 py-5 text-center">
+      <p className="text-sm font-semibold text-on-surface">Agent activity will appear here</p>
+      <p className="mt-1 text-xs text-on-surface-variant">Fixes, cell runs, and narrative synthesis are summarized as they happen.</p>
+    </div>
+  );
+}
 
 export default function AgentActivityBadge() {
-  const activityLog = useNotebookStore((s) => s.activityLog);
-  const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottom = useRef(true);
+  const log = useNotebookStore((s) => s.activityLog);
+  const [expanded, setExpanded] = useState(false);
 
-  // Track if user is scrolled to bottom
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-  }, []);
+  if (log.length === 0) {
+    return (
+      <div className="mt-4">
+        <EmptyState />
+      </div>
+    );
+  }
 
-  // Auto-scroll on new entries (only if at bottom)
-  useEffect(() => {
-    if (atBottom.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  const entries = log.filter((entry) => entry.detail.trim().length > 0);
+  const condensedEntries = entries.slice(-6);
+
+  const renderEntry = (entry: ActivityLogEntry, index: number, total: number) => {
+    const isLast = index === total - 1;
+
+    if (isInvestigationHeader(entry)) {
+      return <InvestigationHeader key={entry.id} entry={entry} index={index} />;
     }
-  }, [activityLog.length]);
 
-  if (activityLog.length === 0 && !pipelineRunning) return null;
+    if (entry.activity === "complete") {
+      return <CompletionBanner key={entry.id} entry={entry} index={index} />;
+    }
+
+    if (entry.chatAction) {
+      return <ChatActionCard key={entry.id} entry={entry} isLast={isLast} index={index} />;
+    }
+
+    if (isCellNode(entry)) {
+      return <CellCard key={entry.id} entry={entry} isLast={isLast} index={index} />;
+    }
+
+    return (
+      <IntermediateEntry
+        key={entry.id}
+        entry={entry}
+        isLast={isLast}
+        index={index}
+      />
+    );
+  };
 
   return (
     <div className="mt-4">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-2">
-        <h3 className="text-xs font-semibold text-gray-700">Agent Activity</h3>
-        {pipelineRunning && (
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-          </span>
-        )}
-        <span className="text-[9px] text-gray-400 ml-auto">{activityLog.length}</span>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="material-symbols-outlined text-[16px] text-primary" style={{ fontVariationSettings: '"FILL" 1' }}>bolt</span>
+        <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-on-surface">Agent Actions</p>
       </div>
 
-      {/* Timeline */}
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="max-h-[calc(100vh-400px)] overflow-y-auto pr-1"
-      >
-        {activityLog.map((entry, i) => {
-          const isLast = i === activityLog.length - 1;
-
-          if (isInvestigationHeader(entry)) {
-            return <InvestigationHeader key={entry.id} entry={entry} />;
-          }
-
-          if (entry.activity === "complete") {
-            return <CompletionBanner key={entry.id} entry={entry} />;
-          }
-
-          if (entry.chatAction) {
-            return <ChatActionCard key={entry.id} entry={entry} isLast={isLast} />;
-          }
-
-          if (isCellNode(entry)) {
-            return <CellCard key={entry.id} entry={entry} isLast={isLast} />;
-          }
-
+      {/* Timeline entries */}
+      <div className="divide-y divide-outline-variant/15">
+        {condensedEntries.map((entry) => {
+          const cfg = ACTIVITY_CONFIG[entry.activity];
+          const label = getActivityLabel(entry);
+          const detail = getActivityDetail(entry);
+          const glyph = entry.activity === "fixing" ? "build" : entry.activity === "backtracking" ? "replay" : entry.activity === "complete" ? "check_circle" : cfg.glyph || "code";
           return (
-            <IntermediateEntry key={entry.id} entry={entry} isLast={isLast} />
+            <button
+              key={entry.id}
+              type="button"
+              onClick={() => entry.cellId ? scrollToCell(entry.cellId) : setExpanded(true)}
+              className="flex w-full flex-col gap-1 py-3 text-left transition-colors hover:bg-surface-container-low/50"
+            >
+              <div className="flex items-center gap-2">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${cfg.dotColor}`} />
+                <span className="flex-1 truncate text-xs font-semibold text-on-surface">{label}</span>
+                <span className="shrink-0 text-[10px] tabular-nums text-on-surface-variant">{formatTime(entry.ts)}</span>
+              </div>
+              <div className="ml-4 flex items-start gap-1.5 text-[11px] leading-4 text-on-surface-variant">
+                <span className="material-symbols-outlined text-[13px] mt-0.5 shrink-0">{glyph}</span>
+                <span className="line-clamp-2">{detail}</span>
+              </div>
+            </button>
           );
         })}
       </div>
+
+      {/* View full timeline button */}
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-outline-variant/20 bg-surface py-2.5 text-[10px] font-bold uppercase tracking-[0.22em] text-on-surface-variant transition-colors hover:bg-surface-container"
+      >
+        View full timeline
+        <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+      </button>
+
+      {expanded && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/45 px-4">
+          <div className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-[1.75rem] border border-outline-variant/20 bg-surface shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline-variant/20 px-5 py-4">
+              <div>
+                <p className="text-sm font-semibold text-on-surface">Agent Timeline</p>
+                <p className="text-xs text-on-surface-variant">Full execution log</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                className="rounded-full border border-outline-variant/20 px-3 py-1 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-container"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-y-auto px-5 py-4">
+              <div className="space-y-1.5">
+                {entries.map((entry, index) => renderEntry(entry, index, entries.length))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

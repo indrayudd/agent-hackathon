@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+import { API_BASE } from "@/lib/backend";
 
 interface Props {
   sessionId: string;
@@ -47,8 +46,9 @@ export default function ExportDialog({ sessionId }: Props) {
     <div className="relative inline-block">
       <button
         onClick={() => setOpen(!open)}
-        className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+        className="flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 transition-opacity font-body"
       >
+        <span className="material-symbols-outlined text-base">download</span>
         Export
       </button>
 
@@ -58,17 +58,19 @@ export default function ExportDialog({ sessionId }: Props) {
             className="fixed inset-0 z-40"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute right-0 bottom-full mb-2 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 min-w-[180px]">
+          <div className="absolute right-0 bottom-full mb-2 z-50 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg p-1.5 min-w-[200px] code-shadow">
             <button
               onClick={downloadPdf}
-              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors"
+              className="w-full flex items-center gap-2.5 text-left px-3 py-2.5 text-sm text-on-surface hover:bg-surface-container-low rounded-lg transition-colors font-body"
             >
+              <span className="material-symbols-outlined text-base text-on-surface-variant">picture_as_pdf</span>
               Download PDF
             </button>
             <button
               onClick={downloadMarkdown}
-              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors"
+              className="w-full flex items-center gap-2.5 text-left px-3 py-2.5 text-sm text-on-surface hover:bg-surface-container-low rounded-lg transition-colors font-body"
             >
+              <span className="material-symbols-outlined text-base text-on-surface-variant">markdown</span>
               Download Markdown
             </button>
           </div>

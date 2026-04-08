@@ -44,8 +44,6 @@ export default function DropZone() {
     setError(null);
     try {
       const data = await uploadFile(file);
-      // Navigate first so the stream WebSocket connects before events flow
-      // runEda is fire-and-forget (202 Accepted), so no need to await the result
       runEda(data.session_id).catch(() => {});
       router.push(`/session/${data.session_id}`);
     } catch (err: any) {
@@ -59,28 +57,34 @@ export default function DropZone() {
       <div
         {...getRootProps()}
         className={`w-full border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
-          isDragActive ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"
-        }`}
+          isDragActive
+            ? "border-primary bg-primary/5"
+            : "border-outline-variant hover:border-outline"
+        } bg-surface-container-lowest`}
       >
         <input {...getInputProps()} />
         {file ? (
           <div>
-            <p className="font-medium text-gray-800">{file.name}</p>
-            <p className="text-sm text-gray-500">{formatSize(file.size)}</p>
+            <span className="material-symbols-outlined text-primary text-3xl mb-2">description</span>
+            <p className="font-medium text-on-surface font-body">{file.name}</p>
+            <p className="text-sm text-on-surface-variant font-body">{formatSize(file.size)}</p>
           </div>
         ) : (
-          <p className="text-gray-500">
-            {isDragActive ? "Drop the file here..." : "Drag & drop a dataset, or click to browse"}
-          </p>
+          <div>
+            <span className="material-symbols-outlined text-on-surface-variant text-3xl mb-2">upload_file</span>
+            <p className="text-on-surface-variant font-body">
+              {isDragActive ? "Drop the file here..." : "Drag & drop a dataset, or click to browse"}
+            </p>
+          </div>
         )}
       </div>
 
-      {error && <p className="text-red-500 text-sm">{error}</p>}
+      {error && <p className="text-error text-sm font-body">{error}</p>}
 
       <button
         onClick={handleRun}
         disabled={!file || uploading}
-        className="px-6 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        className="px-6 py-2.5 rounded-lg bg-primary text-on-primary font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-body"
       >
         {uploading ? "Uploading..." : "Run EDA"}
       </button>

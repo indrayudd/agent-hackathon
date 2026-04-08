@@ -2,13 +2,43 @@
 
 import type { InsightCard as InsightCardType } from "@/lib/types";
 
-const BADGE_COLORS: Record<string, string> = {
-  TREND: "bg-blue-100 text-blue-800",
-  OUTLIER: "bg-red-100 text-red-800",
-  CORRELATION: "bg-purple-100 text-purple-800",
-  CAUSAL: "bg-green-100 text-green-800",
-  DISTRIBUTION: "bg-yellow-100 text-yellow-800",
-  MISSING: "bg-gray-100 text-gray-800",
+const BADGE_STYLES: Record<string, { colors: string; icon: string; accent: string }> = {
+  TREND: {
+    colors: "bg-tertiary-fixed text-on-tertiary-fixed-variant",
+    icon: "query_stats",
+    accent: "from-tertiary/15 to-transparent",
+  },
+  OUTLIER: {
+    colors: "bg-error-container text-on-error-container",
+    icon: "warning",
+    accent: "from-error/12 to-transparent",
+  },
+  CORRELATION: {
+    colors: "bg-secondary-fixed text-on-secondary-fixed-variant",
+    icon: "hub",
+    accent: "from-secondary/12 to-transparent",
+  },
+  CAUSAL: {
+    colors: "bg-primary-fixed text-on-primary-fixed-variant",
+    icon: "account_tree",
+    accent: "from-primary/12 to-transparent",
+  },
+  DISTRIBUTION: {
+    colors: "bg-surface-container-high text-on-surface-variant",
+    icon: "bar_chart",
+    accent: "from-primary/8 to-transparent",
+  },
+  MISSING: {
+    colors: "bg-surface-container text-on-surface-variant",
+    icon: "data_alert",
+    accent: "from-outline/10 to-transparent",
+  },
+};
+
+const DEFAULT_BADGE = {
+  colors: "bg-surface-container text-on-surface-variant",
+  icon: "info",
+  accent: "from-primary/8 to-transparent",
 };
 
 interface Props {
@@ -16,35 +46,39 @@ interface Props {
 }
 
 export default function InsightCard({ insight }: Props) {
-  const badgeClass =
-    BADGE_COLORS[insight.type.toUpperCase()] || "bg-gray-100 text-gray-700";
+  const badge = BADGE_STYLES[insight.type.toUpperCase()] || DEFAULT_BADGE;
+  const confidence = insight.confidence == null ? null : Math.round(insight.confidence * 100);
 
   return (
-    <div className="border border-gray-200 rounded-lg p-3 bg-white">
-      <div className="flex items-center gap-2 mb-1">
-        <span
-          className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}`}
-        >
-          {insight.type}
-        </span>
-        {insight.confidence != null && (
-          <span className="text-xs text-gray-400 ml-auto">
-            {Math.round(insight.confidence * 100)}% confidence
-          </span>
-        )}
-      </div>
-      <p className="text-sm text-gray-700 mb-1">{insight.description}</p>
-      <p className="text-xs text-gray-400">
-        Phase: {insight.phase} &middot; Rule #{insight.rule}
-      </p>
-      {insight.confidence != null && (
-        <div className="mt-2 h-1 w-full rounded-full bg-gray-100">
-          <div
-            className="h-1 rounded-full bg-blue-500"
-            style={{ width: `${Math.round(insight.confidence * 100)}%` }}
-          />
+    <div className="group rounded-[1.1rem] border border-outline-variant/30 bg-surface-container-low px-4 py-4 transition-colors hover:bg-surface-container">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-surface-container">
+          <span className="material-symbols-outlined text-[19px] text-primary">{badge.icon}</span>
         </div>
-      )}
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold tracking-[0.2em] uppercase ${badge.colors}`}>
+              {insight.type}
+            </span>
+            {confidence != null && (
+              <span className="rounded-full bg-surface-container px-2.5 py-1 text-[10px] font-semibold text-on-surface-variant">
+                {confidence}% confidence
+              </span>
+            )}
+          </div>
+
+          <p className="mt-3 text-sm leading-6 text-on-surface">
+            {insight.description}
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">
+            <span>{insight.phase}</span>
+            <span className="text-outline/60">•</span>
+            <span>Rule #{insight.rule}</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

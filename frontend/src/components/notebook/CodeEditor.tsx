@@ -32,26 +32,34 @@ export default function CodeEditor({ cellId, value, onChange, onRun }: Props) {
   );
 
   return (
-    <Editor
-      height={height}
-      language="python"
-      theme="vs-light"
-      value={value}
-      onChange={handleChange}
-      onMount={handleMount}
-      options={{
-        minimap: { enabled: false },
-        lineNumbers: "on",
-        scrollBeyondLastLine: false,
-        wordWrap: "on",
-        fontSize: 14,
-        automaticLayout: true,
-        overviewRulerLanes: 0,
-        hideCursorInOverviewRuler: true,
-        scrollbar: { vertical: "hidden", horizontal: "hidden", alwaysConsumeMouseWheel: false },
-        renderLineHighlight: "none",
-        padding: { top: 8, bottom: 8 },
-      }}
-    />
+    <div className="bg-surface-container-low p-4 font-mono text-[13px]">
+      <Editor
+        height={height}
+        language="python"
+        theme="vs-light"
+        value={value}
+        onChange={handleChange}
+        onMount={handleMount}
+        options={{
+          minimap: { enabled: false },
+          lineNumbers: "on",
+          scrollBeyondLastLine: false,
+          wordWrap: "on",
+          fontSize: 13,
+          fontFamily: "'JetBrains Mono', monospace",
+          automaticLayout: true,
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          scrollbar: { vertical: "hidden", horizontal: "hidden", alwaysConsumeMouseWheel: false },
+          renderLineHighlight: "none",
+          padding: { top: 0, bottom: 0 },
+          tabSize: 4,
+          folding: false,
+          glyphMargin: false,
+          lineDecorationsWidth: 0,
+          lineNumbersMinChars: 3,
+        }}
+      />
+    </div>
   );
 }

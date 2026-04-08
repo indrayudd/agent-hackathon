@@ -1,26 +1,212 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { useStoryStore } from "@/stores/storyStore";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { getStory } from "@/lib/api";
+import { API_BASE } from "@/lib/backend";
+import {
+  defaultPlotDisplay,
+  normalizeReportPlot,
+} from "@/lib/reportViz";
+import type { CellOutput, StoryPlot, StoryPlotVizSpecInput } from "@/lib/types";
+import StorySectionCard from "./StorySectionCard";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+/** Inline markdown — renders as a <span> without wrapping <p> tags */
+function InlineMd({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{ p: ({ children: c }) => <>{c}</> }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
+function ReportMarkdown({ children, className = "" }: { children: string; className?: string }) {
+  return (
+    <div className={`report-prose prose prose-sm max-w-none text-on-surface-variant ${className}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function iconForText(text: string): string {
+  const lower = text.toLowerCase();
+  if (lower.includes("correlat")) return "hub";
+  if (lower.includes("trend") || lower.includes("rise") || lower.includes("fall")) return "trending_up";
+  if (lower.includes("outlier") || lower.includes("anomal")) return "warning";
+  if (lower.includes("distribution") || lower.includes("spread")) return "bar_chart";
+  if (lower.includes("missing") || lower.includes("null")) return "report";
+  if (lower.includes("cluster") || lower.includes("segment")) return "workspaces";
+  if (lower.includes("wind") || lower.includes("speed")) return "air";
+  if (lower.includes("power") || lower.includes("energy")) return "electric_bolt";
+  if (lower.includes("next") || lower.includes("recommend")) return "task_alt";
+  return "insights";
+}
+
+function extractPlotsFromOutputs(outputs: CellOutput[], sectionTitle = ""): StoryPlot[] {
+  const plots: StoryPlot[] = [];
+  for (const output of outputs || []) {
+    const data = output.data || {};
+    const metadata = output.metadata || {};
+    const plotSpec =
+      (metadata.plot_spec as StoryPlotVizSpecInput | undefined) ||
+      (metadata.viz_spec as StoryPlotVizSpecInput | undefined) ||
+      (data["application/vnd.agenticeda.plot-spec+json"] as StoryPlotVizSpecInput | undefined) ||
+      null;
+    const plotlyData = data["application/vnd.plotly.v1+json"];
+    if (plotlyData !== undefined) {
+      plots.push(
+        normalizeReportPlot(
+          {
+            kind: "plotly",
+            mime_type: "application/vnd.plotly.v1+json",
+            source: typeof plotlyData === "string" ? plotlyData : JSON.stringify(plotlyData),
+            title: sectionTitle,
+            display: defaultPlotDisplay("plotly"),
+            plot_spec: plotSpec ?? undefined,
+            viz_spec: plotSpec ?? undefined,
+          },
+          { sectionTitle }
+        )
+      );
+      continue;
+    }
+
+    const imgData = data["image/png"];
+    if (imgData !== undefined) {
+      const raw = typeof imgData === "string" ? imgData : JSON.stringify(imgData);
+      plots.push(
+        normalizeReportPlot(
+          {
+            kind: "image",
+            mime_type: "image/png",
+            source: raw.startsWith("data:") ? raw : `data:image/png;base64,${raw.replace(/\s+/g, "")}`,
+            title: sectionTitle,
+            display: defaultPlotDisplay("image"),
+            plot_spec: plotSpec ?? undefined,
+            viz_spec: plotSpec ?? undefined,
+          },
+          { sectionTitle }
+        )
+      );
+    }
+  }
+  return plots;
+}
+
+function formatGeneratedAt(value: string): string {
+  if (!value) return "";
+  return new Date(value).toLocaleString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 interface StoryPaneProps {
   sessionId: string;
+  onOpenNotebookCell?: (cellId: string) => void;
 }
 
-export default function StoryPane({ sessionId }: StoryPaneProps) {
-  const { title, executiveSummary, sections, generatedAt, loading, error } = useStoryStore();
+export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPaneProps) {
+  const {
+    title,
+    executiveSummary,
+    summaryBlocks,
+    takeaways,
+    sections,
+    generatedAt,
+    loading,
+    error,
+  } = useStoryStore();
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
   const cells = useNotebookStore((s) => s.cells);
   const setStory = useStoryStore((s) => s.setStory);
   const setLoading = useStoryStore((s) => s.setLoading);
   const setError = useStoryStore((s) => s.setError);
+  const setActiveTab = useNotebookStore((s) => s.setActiveTab);
   const [regenerating, setRegenerating] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  useEffect(() => {
+    if (!title && !loading && !pipelineRunning) {
+      setLoading(true);
+      getStory(sessionId, "json")
+        .then((data) => {
+          if (data) setStory(data);
+          else setError("not_found");
+        })
+        .catch(() => setError("not_found"));
+    }
+  }, [sessionId, title, loading, pipelineRunning, setStory, setLoading, setError]);
+
+  const sectionData = useMemo(() => {
+    return sections.map((section) => {
+      const sectionCellIds = section.cell_ids || [];
+      const sectionTitle = section.visual_title || section.title;
+      const declaredPlots = (section.plots || []).map((plot) =>
+        normalizeReportPlot(plot, {
+          sectionTitle,
+          fallbackTitle: sectionTitle,
+          fallbackCaption: section.visual_caption,
+        })
+      );
+      const plots: StoryPlot[] = declaredPlots.length > 0 ? declaredPlots : [];
+
+      if (plots.length === 0) {
+        cells.forEach((cell) => {
+          if (sectionCellIds.includes(cell.id) && cell.outputs) {
+            plots.push(...extractPlotsFromOutputs(cell.outputs, sectionTitle));
+          }
+        });
+      }
+
+      return {
+        section,
+        plots,
+        plotCellIds: (() => {
+          const sourceIds = plots
+            .map((plot) => plot.source_cell_id)
+            .filter((cellId): cellId is string => Boolean(cellId));
+          return sourceIds.length > 0 ? sourceIds : section.plot_cell_ids || sectionCellIds;
+        })(),
+      };
+    });
+  }, [sections, cells]);
+
+  const openNotebookCell = useCallback((cellId: string) => {
+    if (onOpenNotebookCell) {
+      onOpenNotebookCell(cellId);
+      return;
+    }
+
+    setActiveTab("notebook");
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const el = document.getElementById(`cell-${cellId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-2", "ring-primary/40", "ring-offset-2", "activity-highlight");
+          window.setTimeout(
+            () => el.classList.remove("ring-2", "ring-primary/40", "ring-offset-2", "activity-highlight"),
+            1400
+          );
+        }
+      });
+    });
+  }, [onOpenNotebookCell, setActiveTab]);
 
   const handleRegenerate = async () => {
     setRegenerating(true);
@@ -39,189 +225,264 @@ export default function StoryPane({ sessionId }: StoryPaneProps) {
     }
   };
 
+  const handleExport = async (format: "pdf" | "md") => {
+    try {
+      const blob =
+        format === "pdf"
+          ? await getStory(sessionId, "pdf")
+          : new Blob([await getStory(sessionId, "md")], {
+              type: "text/markdown",
+            });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `eda-report.${format}`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch {
+      // ignore export errors
+    }
+  };
+
+  // Auto-retry polling when story hasn't been generated yet
   useEffect(() => {
-    if (!title && !loading && !pipelineRunning) {
+    if (error !== "not_found" || title || loading || pipelineRunning) return;
+    if (retryCount >= 15) return;
+    const timer = window.setTimeout(() => {
+      setError(null);
       setLoading(true);
       getStory(sessionId, "json")
-        .then((data) => {
-          if (data) setStory(data);
+        .then((d) => {
+          if (d) setStory(d);
           else setError("not_found");
         })
         .catch(() => setError("not_found"));
-    }
-  }, [sessionId, title, loading, pipelineRunning, setStory, setLoading, setError]);
+      setRetryCount((c) => c + 1);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [error, title, loading, pipelineRunning, retryCount, sessionId, setError, setLoading, setStory]);
 
-  // Collect ALL plot images (used as fallback if no section has plots)
-  const allPlotImages: string[] = [];
-  cells.forEach((cell) => {
-    cell.outputs?.forEach((o) => {
-      const imgData = o.data?.["image/png"];
-      if (imgData) allPlotImages.push(imgData);
-    });
-  });
+  // Animate sections into view as they scroll into the viewport
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("animate-rise-in");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.1, rootMargin: "0px 0px -50px 0px" }
+    );
+    document.querySelectorAll("[data-animate]").forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [sectionData]);
 
   if (pipelineRunning) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3">
-        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm">Agent is analyzing your data...</p>
-        <p className="text-xs text-gray-300">Story will be generated when analysis completes</p>
+      <div className="flex h-full flex-col items-center justify-center gap-4 text-on-surface-variant">
+        <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        <p className="text-sm font-body">Agent is analyzing your data...</p>
+        <p className="text-xs text-outline">Story will be generated when analysis completes</p>
       </div>
     );
   }
 
   if (error === "not_found" && !title) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3">
-        <p className="text-sm">No story available yet</p>
-        <button
-          onClick={() => { setError(null); setLoading(true); getStory(sessionId, "json").then(d => { if (d) setStory(d); else setError("not_found"); }).catch(() => setError("not_found")); }}
-          className="text-xs text-blue-500 hover:underline"
-        >
-          Retry
-        </button>
+      <div className="flex h-full flex-col items-center justify-center gap-4 text-on-surface-variant">
+        {retryCount < 15 ? (
+          <>
+            <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+            <p className="text-sm font-body">Generating story report...</p>
+            <p className="text-xs text-outline">This may take a few moments</p>
+          </>
+        ) : (
+          <>
+            <span className="material-symbols-outlined text-4xl text-outline">auto_stories</span>
+            <p className="text-sm font-body">No story available yet</p>
+            <button
+              onClick={() => {
+                setRetryCount(0);
+                setError(null);
+                setLoading(true);
+                getStory(sessionId, "json")
+                  .then((d) => {
+                    if (d) setStory(d);
+                    else setError("not_found");
+                  })
+                  .catch(() => setError("not_found"));
+              }}
+              className="text-xs font-body text-primary hover:underline"
+            >
+              Retry
+            </button>
+          </>
+        )}
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-400">
-        <div className="w-5 h-5 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+      <div className="flex h-full items-center justify-center text-on-surface-variant">
+        <div className="h-6 w-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
       </div>
     );
   }
 
-  const handleExport = async (format: "pdf" | "md") => {
-    try {
-      const data = await getStory(sessionId, format);
-      if (!data) return;
-      const blob = data instanceof Blob ? data : new Blob([typeof data === "string" ? data : JSON.stringify(data)], { type: format === "pdf" ? "application/pdf" : "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `eda-report.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch { /* ignore export errors */ }
-  };
+  const leadParagraph = summaryBlocks[0] || executiveSummary;
+  const visibleTakeaways = takeaways.length > 0 ? takeaways : [];
 
   return (
-    <div className="h-full overflow-y-auto">
-      <article className="max-w-3xl mx-auto px-8 py-10">
-        {/* Title + Refresh */}
-        <div className="flex items-start justify-between mb-2">
-          <h1 className="text-3xl font-bold text-gray-900">{title || "EDA Report"}</h1>
-          <button
-            onClick={handleRegenerate}
-            disabled={regenerating}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 hover:border-gray-400 transition-colors disabled:opacity-50 flex-shrink-0 mt-1"
-            title="Regenerate story from current notebook"
-          >
-            {regenerating ? (
-              <div className="w-3.5 h-3.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.7" />
-                <polyline points="12,1 12,5 8,5" />
-                <path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.7" />
-                <polyline points="4,15 4,11 8,11" />
-              </svg>
-            )}
-            {regenerating ? "Regenerating..." : "Refresh"}
-          </button>
-        </div>
-        {generatedAt && (
-          <p className="text-sm text-gray-400 mb-8">
-            Generated {new Date(generatedAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-          </p>
-        )}
+    <div className="story-shell relative h-full overflow-y-auto">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-primary/10 via-transparent to-transparent" />
+      <div className="pointer-events-none absolute right-[-6rem] top-24 h-72 w-72 rounded-full bg-tertiary/10 blur-3xl animate-soft-drift" />
+      <div className="pointer-events-none absolute left-[-5rem] top-48 h-64 w-64 rounded-full bg-primary/10 blur-3xl animate-soft-drift" />
 
-        {/* Executive Summary */}
-        {executiveSummary && (
-          <div className="mb-10 p-5 bg-blue-50 border-l-4 border-blue-400 rounded-r-lg">
-            <h2 className="text-sm font-semibold text-blue-700 uppercase tracking-wide mb-2">Key Takeaways</h2>
-            <div className="text-gray-700 leading-relaxed text-sm">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {executiveSummary.replace(/\\n/g, "\n")}
-              </ReactMarkdown>
-            </div>
+      <div className="sticky top-0 z-20 border-b border-outline-variant/60 bg-surface/85 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-10">
+          <div className="flex items-center gap-2 text-xs text-on-surface-variant font-body">
+            <span className="material-symbols-outlined text-base">article</span>
+            <span>Story report</span>
           </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRegenerate}
+              disabled={regenerating}
+              className="flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1 text-xs font-body text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+              title="Regenerate story from current notebook"
+            >
+              {regenerating ? (
+                <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              ) : (
+                <span className="material-symbols-outlined text-sm">refresh</span>
+              )}
+              {regenerating ? "Regenerating..." : "Refresh"}
+            </button>
+            <button
+              onClick={() => handleExport("pdf")}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-xs font-body text-on-primary transition-opacity hover:opacity-90"
+            >
+              <span className="material-symbols-outlined text-sm">picture_as_pdf</span>
+              Export PDF
+            </button>
+            <button
+              onClick={() => handleExport("md")}
+              className="flex items-center gap-1.5 rounded-lg border border-outline-variant px-3 py-1 text-xs font-body text-on-surface-variant transition-colors hover:bg-surface-container"
+            >
+              <span className="material-symbols-outlined text-sm">share</span>
+              Export Markdown
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <article className="relative mx-auto flex max-w-4xl flex-col gap-12 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <section className="story-lead animate-rise-in border-b border-outline-variant/18 pb-10">
+          <div className="max-w-4xl">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-body text-on-surface-variant">
+              <span className="story-kicker text-[10px] font-bold text-primary">Narrative report</span>
+              {generatedAt && (
+                <span>{formatGeneratedAt(generatedAt)}</span>
+              )}
+            </div>
+
+            <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-on-surface sm:text-5xl">
+              {title || "EDA Report"}
+            </h1>
+
+            {leadParagraph && (
+              <ReportMarkdown className="mt-5 text-[15px] leading-7 text-on-surface-variant">
+                {leadParagraph}
+              </ReportMarkdown>
+            )}
+          </div>
+
+          {visibleTakeaways.length > 0 && (
+            <section className="mt-8 -mx-4 px-4 overflow-x-auto">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="material-symbols-outlined text-primary">summarize</span>
+                <h2 className="text-lg font-bold tracking-tight text-on-surface">
+                  Key Takeaways
+                </h2>
+              </div>
+              <div className="flex gap-4 pb-4" style={{ minWidth: "min-content" }}>
+                {visibleTakeaways.map((takeaway, index) => (
+                  <article
+                    key={takeaway.id}
+                    className="w-72 shrink-0 rounded-2xl border border-outline-variant/20 bg-white/80 backdrop-blur px-5 py-4 shadow-sm"
+                    style={{ "--story-delay": `${index * 70}ms` } as CSSProperties}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-container">
+                        <span className="material-symbols-outlined text-[18px] text-primary">
+                          {takeaway.icon || iconForText(takeaway.body)}
+                        </span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="story-kicker text-[10px] font-bold text-primary">
+                          Takeaway {String(takeaway.index).padStart(2, "0")}
+                        </span>
+                        <h3 className="mt-0.5 text-sm font-semibold text-on-surface leading-snug">
+                          {takeaway.title}
+                        </h3>
+                      </div>
+                    </div>
+                    <ul className="mt-3 space-y-2 text-[13px] leading-6 text-on-surface-variant">
+                      {takeaway.points.map((point, pointIndex) => (
+                        <li key={pointIndex} className="flex gap-2">
+                          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+                          <span className="min-w-0"><InlineMd>{point}</InlineMd></span>
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+        </section>
+
+        {sectionData.length > 0 && (
+          <section className="space-y-8">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-primary">insights</span>
+              <h2 className="text-lg font-bold tracking-tight text-on-surface">
+                Analysis
+              </h2>
+            </div>
+            <div className="space-y-0 border-t border-outline-variant/20 pt-2">
+              {sectionData.map(({ section, plots, plotCellIds }, index) => (
+                <div key={`${section.phase}-${index}`}>
+                  {index > 0 && (
+                    <div className="flex justify-center py-2">
+                      <div className="h-8 w-px bg-gradient-to-b from-outline-variant/30 to-transparent" />
+                    </div>
+                  )}
+                  <div data-animate className="opacity-0">
+                    <StorySectionCard
+                      section={section}
+                      plots={plots}
+                      plotCellIds={plotCellIds}
+                      onOpenCell={openNotebookCell}
+                      index={index}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
 
-        {/* Narrative Sections with contextual plots */}
-        {(() => {
-          let anySectionHasPlots = false;
-          const rendered = sections.map((section, i) => {
-            const sectionCellIds = section.cell_ids || [];
-            const sectionPlots: string[] = [];
-            cells.forEach((cell) => {
-              if (sectionCellIds.includes(cell.id)) {
-                cell.outputs?.forEach((o) => {
-                  const img = o.data?.["image/png"];
-                  if (img) sectionPlots.push(img);
-                });
-              }
-            });
-            if (sectionPlots.length > 0) anySectionHasPlots = true;
-
-            return (
-              <section key={i} className="mb-10">
-                <h2 className="text-xl font-semibold text-gray-800 mb-3 pb-2 border-b border-gray-100">
-                  {section.title}
-                </h2>
-                <div className="text-gray-600 leading-relaxed prose prose-sm max-w-none mb-4">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {(section.content || "").replace(/\\n/g, "\n")}
-                  </ReactMarkdown>
-                </div>
-                {sectionPlots.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-                    {sectionPlots.map((img, j) => (
-                      <div key={j} className="border border-gray-100 rounded-lg overflow-hidden shadow-sm">
-                        <img src={`data:image/png;base64,${img}`} alt={`${section.title} plot ${j + 1}`} className="w-full" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            );
-          });
-
-          return (
-            <>
-              {rendered}
-              {!anySectionHasPlots && allPlotImages.length > 0 && (
-                <div className="mb-10">
-                  <h2 className="text-lg font-semibold text-gray-800 mb-4">Visualizations</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {allPlotImages.slice(0, 8).map((img, i) => (
-                      <div key={i} className="border border-gray-100 rounded-lg overflow-hidden shadow-sm">
-                        <img src={`data:image/png;base64,${img}`} alt={`Plot ${i + 1}`} className="w-full" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          );
-        })()}
-
-        {/* Export */}
-        <div className="mt-12 pt-6 border-t border-gray-100 flex gap-3">
-          <button
-            onClick={() => handleExport("pdf")}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors"
-          >
-            Export PDF
-          </button>
-          <button
-            onClick={() => handleExport("md")}
-            className="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
-          >
-            Export Markdown
-          </button>
-        </div>
+        <footer className="pt-6 pb-4 text-xs text-outline">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="material-symbols-outlined text-base">smart_toy</span>
+            <span>Generated by AgenticEDA</span>
+          </div>
+        </footer>
       </article>
     </div>
   );

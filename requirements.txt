@@ -42,6 +42,7 @@ scikit-learn>=1.3
 # Phase 11: Reporting
 nbformat>=5.9
 nbclient>=0.8
+ipykernel>=6.29
 
 # Backend server
 fastapi>=0.115

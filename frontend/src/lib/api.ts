@@ -1,6 +1,42 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+import type { Session, StorySection } from "./types";
+import { API_BASE } from "./backend";
 
-export async function uploadFile(file: File): Promise<any> {
+export interface UploadResponse {
+  session_id: string;
+  dataset_preview: {
+    columns: string[];
+    dtypes: Record<string, string>;
+    first_5_rows: Record<string, unknown>[];
+    row_count: number;
+    col_count: number;
+  };
+  source_format: string;
+  load_warnings: string[];
+}
+
+export interface SessionListResponse {
+  sessions: Session[];
+}
+
+export interface StoryResponse {
+  title: string;
+  executive_summary: string;
+  sections: StorySection[];
+  generated_at: string;
+}
+
+export interface RunResponse {
+  status: string;
+  session_id: string;
+  message?: string;
+}
+
+async function readError(res: Response): Promise<string> {
+  const text = await res.text().catch(() => "");
+  return text.trim() || res.statusText || `HTTP ${res.status}`;
+}
+
+export async function uploadFile(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: form });
@@ -8,12 +44,12 @@ export async function uploadFile(file: File): Promise<any> {
   return res.json();
 }
 
-export async function listSessions(): Promise<any> {
+export async function listSessions(): Promise<SessionListResponse> {
   const res = await fetch(`${API_BASE}/sessions`);
   return res.json();
 }
 
-export async function getNotebook(sessionId: string): Promise<any> {
+export async function getNotebook(sessionId: string): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${API_BASE}/notebook/${sessionId}`);
   if (!res.ok) return null;
   return res.json();
@@ -23,13 +59,33 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${API_BASE}/session/${sessionId}`, { method: "DELETE" });
 }
 
-export async function runEda(sessionId: string): Promise<any> {
+export async function runEda(sessionId: string): Promise<RunResponse> {
   const res = await fetch(`${API_BASE}/run/${sessionId}`, { method: "POST" });
   return res.json();
 }
 
-export async function getStory(sessionId: string, format: "json" | "md" | "pdf" = "json"): Promise<any> {
-  const res = await fetch(`${API_BASE}/story/${sessionId}?format=${format}`);
-  if (!res.ok) return null;
-  return format === "pdf" ? res.blob() : res.json();
+export async function getStory(sessionId: string, format?: "json"): Promise<StoryResponse>;
+export async function getStory(sessionId: string, format: "md"): Promise<string>;
+export async function getStory(sessionId: string, format: "pdf"): Promise<Blob>;
+export async function getStory(
+  sessionId: string,
+  format: "json" | "md" | "pdf" = "json"
+): Promise<StoryResponse | Blob | string> {
+  const res = await fetch(`${API_BASE}/story/${sessionId}?format=${format}`, {
+    headers: format === "pdf" ? { Accept: "application/pdf" } : undefined,
+  });
+  if (!res.ok) {
+    throw new Error(`Story fetch failed: ${await readError(res)}`);
+  }
+  if (format === "pdf") {
+    const blob = await res.blob();
+    if (!blob.size) {
+      throw new Error("Story PDF export returned an empty file");
+    }
+    return blob;
+  }
+  if (format === "md") {
+    return res.text();
+  }
+  return res.json();
 }

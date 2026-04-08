@@ -41,6 +41,12 @@ function hashString(s: string): string {
   return hash.toString(16);
 }
 
+function asText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return JSON.stringify(value);
+}
+
 export function compare(
   baseline: CellOutput[],
   current: CellOutput[]
@@ -86,10 +92,10 @@ export function compare(
   // Plot comparison (check if base64 images changed)
   const basePlots = baseline
     .filter((o) => o.data?.["image/png"])
-    .map((o) => o.data!["image/png"]);
+    .map((o) => asText(o.data?.["image/png"]));
   const currPlots = current
     .filter((o) => o.data?.["image/png"])
-    .map((o) => o.data!["image/png"]);
+    .map((o) => asText(o.data?.["image/png"]));
 
   if (basePlots.length > 0 || currPlots.length > 0) {
     const baseHashes = basePlots.map((p) => hashString(p));

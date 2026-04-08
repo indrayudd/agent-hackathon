@@ -1,132 +1,455 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import ThreeColumnLayout from "@/components/layout/ThreeColumnLayout";
-import TabBar from "@/components/layout/TabBar";
 import NotebookPane from "@/components/notebook/NotebookPane";
 import StoryPane from "@/components/story/StoryPane";
 import HistoryPanel from "@/components/history/HistoryPanel";
 import ChatSidebar from "@/components/chat/ChatSidebar";
-import AgentActivityBadge from "@/components/layout/AgentActivityBadge";
+import AgentActivityBadge from "../../../components/layout/AgentActivityBadge";
 import { useNotebookStore } from "@/stores/notebookStore";
+import { useStoryStore } from "@/stores/storyStore";
+import { useChatStore } from "@/stores/chatStore";
+import { useSessionStore } from "@/stores/sessionStore";
 import { useAgentStream } from "@/hooks/useAgentStream";
+import { getNotebook, getStory, listSessions } from "@/lib/api";
+import type { Cell, CellOutput, Session } from "@/lib/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+function normalizeText(value: unknown): string {
+  if (Array.isArray(value)) return value.join("");
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeOutputs(value: unknown): CellOutput[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((output) => {
+    const entry = (output ?? {}) as Record<string, unknown>;
+    return {
+      output_type: (entry.output_type as CellOutput["output_type"]) ?? "stream",
+      text: typeof entry.text === "string" ? entry.text : undefined,
+      data: entry.data && typeof entry.data === "object" ? (entry.data as Record<string, string>) : undefined,
+      metadata:
+        entry.metadata && typeof entry.metadata === "object"
+          ? (entry.metadata as Record<string, unknown>)
+          : undefined,
+      ename: typeof entry.ename === "string" ? entry.ename : undefined,
+      evalue: typeof entry.evalue === "string" ? entry.evalue : undefined,
+      traceback: Array.isArray(entry.traceback)
+        ? entry.traceback.flatMap((line) => (typeof line === "string" ? [line] : []))
+        : undefined,
+    };
+  });
+}
+
+function normalizeNotebookCells(payload: Record<string, unknown> | null): Cell[] {
+  const cells = Array.isArray(payload?.cells) ? payload.cells : [];
+  return cells.map((rawCell, index) => {
+    const entry = (rawCell ?? {}) as Record<string, unknown>;
+    const cellType = entry.cell_type === "markdown" ? "markdown" : "code";
+    return {
+      id: typeof entry.id === "string" ? entry.id : `nb-${index + 1}`,
+      cell_type: cellType,
+      source: normalizeText(entry.source),
+      outputs: normalizeOutputs(entry.outputs),
+      execution_count:
+        typeof entry.execution_count === "number" ? entry.execution_count : null,
+      executing: false,
+      error: null,
+    };
+  });
+}
+
+function scrollToNotebookCell(cellId?: string) {
+  if (!cellId) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`cell-${cellId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-primary/30", "ring-offset-2");
+        window.setTimeout(() => {
+          el.classList.remove("ring-2", "ring-primary/30", "ring-offset-2");
+        }, 1400);
+      }
+    });
+  });
+}
 
 export default function SessionPage() {
-  const params = useParams<{ id: string }>();
+  const params = useParams<{ id: string | string[] }>();
   const router = useRouter();
-  const activeTab = useNotebookStore((s) => s.activeTab);
-  const setActiveTab = useNotebookStore((s) => s.setActiveTab);
-  const [showHistory, setShowHistory] = useState(false);
-  const [sessionMeta, setSessionMeta] = useState<any>(null);
-  const dirty = useNotebookStore((s) => s.dirty);
+  const sessionId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const [activeTab, setActiveTabState] = useState<"notebook" | "story" | "history">("notebook");
+  const [explorerOpen, setExplorerOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(true);
+  const contentPaneRef = useRef<HTMLElement | null>(null);
+  const scrollPositionsRef = useRef<Record<string, number>>({});
   const cellCount = useNotebookStore((s) => s.cells.length);
   const hypothesisGroups = useNotebookStore((s) => s.hypothesisGroups);
+  const activityLog = useNotebookStore((s) => s.activityLog);
+  const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
+  const currentPhase = useNotebookStore((s) => s.currentPhase);
+  const storyTitle = useStoryStore((s) => s.title);
+  const storySections = useStoryStore((s) => s.sections);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+  const sessions = useSessionStore((s) => s.sessions);
+  const setSessions = useSessionStore((s) => s.setSessions);
+  const sessionMeta =
+    sessions.find((session: Session) => session.session_id === sessionId) ?? null;
 
-  // Reset store when entering a new session (new CSV upload)
+  // Don't override user's tab choice — just use activeTab directly
+  const resolvedTab = activeTab;
+
+  const findScrollContainer = useCallback((tab: string): HTMLElement | null => {
+    const root = contentPaneRef.current;
+    if (!root) return null;
+    if (tab === "notebook") return root.querySelector<HTMLElement>("[data-notebook-scroll]");
+    if (tab === "story") return root.querySelector<HTMLElement>(".story-shell");
+    if (tab === "history") return root.querySelector<HTMLElement>(".history-scroll-pane");
+    return null;
+  }, []);
+
+  const setActiveTab = useCallback((tab: "notebook" | "story" | "history") => {
+    setActiveTabState((prev) => {
+      const container = findScrollContainer(prev);
+      if (container) {
+        scrollPositionsRef.current[prev] = container.scrollTop;
+      }
+      return tab;
+    });
+    useNotebookStore.getState().setActiveTab(tab);
+  }, [findScrollContainer]);
+
   useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+
     useNotebookStore.getState().resetForNewSession();
-  }, [params.id]);
+    useStoryStore.getState().clear();
+    useChatStore.getState().clear();
+    setActiveSession(sessionId);
 
-  // Connect to the agent stream for real-time cell updates
-  useAgentStream(params.id);
+    void Promise.allSettled([
+      listSessions(),
+      getNotebook(sessionId),
+      getStory(sessionId, "json"),
+      fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/run/${sessionId}/status`).then(r => r.json()).catch(() => null),
+    ]).then(([sessionsResult, notebookResult, storyResult, statusResult]) => {
+      if (cancelled) return;
 
-  // Fetch session metadata for files sidebar
+      if (sessionsResult.status === "fulfilled") {
+        setSessions(sessionsResult.value.sessions || []);
+      }
+
+      // If run is already completed/failed, clear stale pipelineRunning
+      if (statusResult.status === "fulfilled" && statusResult.value) {
+        const runStatus = statusResult.value.status;
+        if (runStatus === "completed" || runStatus === "failed" || runStatus === "idle") {
+          useNotebookStore.getState().setPipelineRunning(false);
+        }
+      }
+
+      const notebook =
+        notebookResult.status === "fulfilled" ? notebookResult.value : null;
+      const normalizedCells = normalizeNotebookCells(notebook);
+      if (normalizedCells.length > 0) {
+        useNotebookStore.getState().setCells(normalizedCells);
+      }
+
+      if (storyResult.status === "fulfilled" && storyResult.value) {
+        useStoryStore.getState().setStory(storyResult.value);
+        if (normalizedCells.length === 0) {
+          setActiveTab("story");
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   useEffect(() => {
-    fetch(`${API_BASE}/sessions`)
-      .then((r) => r.json())
-      .then((data) => {
-        const session = (data.sessions || []).find(
-          (s: any) => s.session_id === params.id
-        );
-        if (session) setSessionMeta(session);
-      })
-      .catch(() => {});
-  }, [params.id]);
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const container = findScrollContainer(resolvedTab);
+        if (!container) return;
+        container.scrollTop = scrollPositionsRef.current[resolvedTab] ?? 0;
+      });
+    });
 
-  const handleConfirm = useCallback(() => {
-    fetch(`${API_BASE}/notebook/${params.id}/confirm`, { method: "POST" })
-      .then(() => useNotebookStore.getState().setDirty(false))
-      .catch(() => {});
-  }, [params.id]);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+    };
+  }, [findScrollContainer, resolvedTab]);
 
-  const left = (
-    <div className="p-3">
-      <button
-        onClick={() => router.push("/")}
-        className="text-sm text-blue-500 hover:underline mb-4 block"
-      >
-        &larr; Back
-      </button>
-      <h2 className="text-sm font-semibold text-gray-800 mb-3">Files</h2>
-      {sessionMeta ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 p-2 rounded bg-blue-50 border border-blue-100">
-            <span className="text-lg">📄</span>
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-gray-800 truncate">
-                {sessionMeta.original_filename}
-              </p>
-              <p className="text-[10px] text-gray-500">
-                {sessionMeta.row_count} rows · {sessionMeta.col_count} cols · {sessionMeta.source_format}
-              </p>
+  useAgentStream(sessionId);
+
+  const tabClass = (tab: "notebook" | "story" | "history") =>
+    resolvedTab === tab
+      ? "text-blue-700 border-b-2 border-blue-700 font-semibold"
+      : "text-slate-500 hover:bg-slate-50";
+
+  const sideNavClass = (tab: string) =>
+    resolvedTab === tab
+      ? "text-blue-700 border-l-2 border-blue-700"
+      : "text-slate-400 hover:text-slate-900";
+
+  const focusNotebook = useCallback(() => {
+    setActiveTab("notebook");
+    requestAnimationFrame(() => {
+      const firstCell = useNotebookStore.getState().cells.find((cell) => cell.cell_type === "code" || cell.cell_type === "markdown");
+      if (firstCell) {
+        scrollToNotebookCell(firstCell.id);
+      }
+    });
+  }, [setActiveTab]);
+
+  const focusInvestigation = useCallback(
+    (groupId: string) => {
+      const store = useNotebookStore.getState();
+      const group = store.hypothesisGroups.find((g) => g.id === groupId);
+      setActiveTab("notebook");
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const targetCellId =
+            group?.cellIds?.[0] ||
+            activityLog.find((entry) => entry.hypothesisId === groupId && entry.cellId)?.cellId ||
+            store.cells.find((cell) => cell.cell_type === "code")?.id;
+
+          if (targetCellId) {
+            scrollToNotebookCell(targetCellId);
+            return;
+          }
+          const container = document.querySelector<HTMLElement>("[data-notebook-scroll]");
+          container?.scrollTo({ top: 0, behavior: "smooth" });
+        });
+      });
+    },
+    [activityLog, setActiveTab]
+  );
+
+  return (
+    <div className="flex flex-col h-screen overflow-hidden">
+      {/* ── TopNavBar ─────────────────────────────────────── */}
+      <header className="w-full h-12 flex items-center justify-between px-4 bg-white border-b border-slate-200 z-50 shrink-0">
+        <div className="flex items-center gap-6">
+          <button
+            onClick={() => router.push("/")}
+            className="text-lg font-extrabold text-slate-900 tracking-tight font-headline hover:opacity-80 transition-opacity"
+          >
+            AgenticEDA
+          </button>
+          <nav className="hidden md:flex items-center gap-1 h-12">
+            <button
+              onClick={() => setActiveTab("notebook")}
+              className={`px-3 h-full flex items-center text-sm tracking-tight font-headline transition-colors ${tabClass("notebook")}`}
+            >
+              Notebook
+            </button>
+            <button
+              onClick={() => setActiveTab("story")}
+              className={`px-3 h-full flex items-center text-sm tracking-tight font-headline transition-colors ${tabClass("story")}`}
+            >
+              Story
+            </button>
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`px-3 h-full flex items-center text-sm tracking-tight font-headline transition-colors ${tabClass("history")}`}
+            >
+              History
+            </button>
+          </nav>
+        </div>
+        <div className="flex items-center gap-3">
+          {pipelineRunning && (
+            <span className="flex items-center gap-1.5 text-xs text-primary font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+              {currentPhase || "Analyzing..."}
+            </span>
+          )}
+          {!chatOpen && (
+            <button
+              onClick={() => setChatOpen(true)}
+              className="flex items-center gap-1 text-xs text-slate-500 hover:text-primary transition-colors"
+              title="Open chat"
+            >
+              <span className="material-symbols-outlined text-[18px]">chat</span>
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* ── SideNavRail ───────────────────────────────────── */}
+        <aside className="w-16 bg-slate-50 flex flex-col items-center py-4 border-r border-slate-200 shrink-0 z-40">
+          <div className="flex flex-col gap-6 items-center w-full">
+            <button
+              onClick={() => setExplorerOpen((v) => !v)}
+              className={`w-full flex flex-col items-center py-2 transition-all duration-150 ${explorerOpen ? "text-blue-700 border-l-2 border-blue-700" : "text-slate-400 hover:text-slate-900"}`}
+            >
+              <span className="material-symbols-outlined" style={explorerOpen ? { fontVariationSettings: '"FILL" 1' } : undefined}>
+                folder
+              </span>
+              <span className="text-[10px] font-semibold mt-1">Explorer</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("story")}
+              className={`w-full flex flex-col items-center py-2 transition-all duration-150 ${sideNavClass("story")}`}
+            >
+              <span className="material-symbols-outlined">auto_stories</span>
+              <span className="text-[10px] font-semibold mt-1">Story</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`w-full flex flex-col items-center py-2 transition-all duration-150 ${sideNavClass("history")}`}
+            >
+              <span className="material-symbols-outlined" style={resolvedTab === "history" ? { fontVariationSettings: '"FILL" 1' } : undefined}>
+                history
+              </span>
+              <span className="text-[10px] font-semibold mt-1">History</span>
+            </button>
+          </div>
+        </aside>
+
+        {/* ── Explorer Panel ────────────────────────────────── */}
+        <section
+          className={`bg-surface-container-low flex flex-col shrink-0 border-r border-outline-variant/20 transition-[width] duration-200 overflow-hidden ${explorerOpen ? "w-64" : "w-0 border-r-0"}`}
+        >
+          <div className="p-4 flex items-center justify-between min-w-[15rem]">
+            <h2 className="font-headline font-bold text-xs uppercase tracking-widest text-on-surface-variant">
+              Explorer
+            </h2>
+            <button onClick={() => setExplorerOpen(false)} className="material-symbols-outlined text-sm cursor-pointer hover:text-primary">
+              chevron_left
+            </button>
+          </div>
+          <div className="px-2 space-y-1 overflow-y-auto flex-1">
+            {/* Datasets */}
+            <div className="group">
+              <button
+                type="button"
+                onClick={focusNotebook}
+                className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+                <span>DATASETS</span>
+              </button>
+              {sessionMeta && (
+                <div className="ml-4 space-y-0.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={focusNotebook}
+                    className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-container-highest/50 text-left text-xs text-primary font-medium hover:bg-surface-container-highest/70"
+                  >
+                    <span className="material-symbols-outlined text-[16px] text-blue-500">table_chart</span>
+                    <span className="truncate">{sessionMeta.original_filename}</span>
+                  </button>
+                  <div className="px-2 text-[10px] text-on-surface-variant ml-6">
+                    {sessionMeta.row_count} rows &middot; {sessionMeta.col_count} cols
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Notebooks */}
+            {cellCount > 0 && (
+              <div className="group mt-4">
+                <button
+                  type="button"
+                  onClick={focusNotebook}
+                  className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
+                >
+                  <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+                  <span>NOTEBOOKS</span>
+                </button>
+                <div className="ml-4 space-y-0.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={focusNotebook}
+                    className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-container-highest/50 cursor-pointer text-xs text-primary font-medium text-left hover:bg-surface-container-high"
+                  >
+                    <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: '"FILL" 1' }}>description</span>
+                    <span>notebook.ipynb</span>
+                  </button>
+                  <div className="px-2 text-[10px] text-on-surface-variant ml-6">
+                    {cellCount} cells
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Hypothesis Groups */}
+            {hypothesisGroups.length > 0 && (
+              <div className="group mt-4">
+                <button
+                  type="button"
+                  onClick={focusNotebook}
+                  className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
+                >
+                  <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+                  <span>INVESTIGATIONS</span>
+                </button>
+                <div className="ml-4 space-y-0.5 mt-1">
+                  {hypothesisGroups.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => focusInvestigation(g.id)}
+                      className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer text-xs text-on-surface-variant text-left"
+                    >
+                      <span className="material-symbols-outlined text-[16px] text-primary">science</span>
+                      <span className="truncate">{g.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Agent Activity */}
+            <AgentActivityBadge />
+          </div>
+
+          {/* Kernel Status */}
+          <div className="p-4 border-t border-outline-variant/10">
+            <div className="flex items-center justify-between p-2 rounded-lg bg-primary/5 border border-primary/10">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary text-[16px]">cloud_done</span>
+                <span className="text-[10px] font-bold text-on-surface truncate">Py Kernel</span>
+              </div>
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
             </div>
           </div>
-          {cellCount > 0 && (
-            <div className="flex items-center gap-2 p-2 rounded bg-green-50 border border-green-100">
-              <span className="text-lg">📓</span>
-              <div>
-                <p className="text-xs font-medium text-gray-800">notebook.ipynb</p>
-                <p className="text-[10px] text-gray-500">{cellCount} cells</p>
-              </div>
-            </div>
+        </section>
+
+        {/* ── Main Content Area ─────────────────────────────── */}
+        <main
+          ref={(node) => {
+            contentPaneRef.current = node;
+          }}
+          className="flex-1 overflow-hidden flex flex-col"
+        >
+          {resolvedTab === "notebook" && <NotebookPane />}
+          {resolvedTab === "story" && (
+            <StoryPane
+              sessionId={sessionId}
+              onOpenNotebookCell={(cellId) => {
+                setActiveTab("notebook");
+                scrollToNotebookCell(cellId);
+              }}
+            />
           )}
-          {hypothesisGroups.map((g) => (
-            <div key={g.id} className="flex items-center gap-2 p-2 rounded bg-purple-50 border border-purple-100 mt-1">
-              <span className="text-lg">🔬</span>
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-gray-800 truncate">{g.title}</p>
-                <p className="text-[10px] text-gray-500">{g.cellIds.length} cells</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-xs text-gray-400">Session: {params.id.slice(0, 8)}...</p>
-      )}
-      <AgentActivityBadge />
-    </div>
-  );
+          {resolvedTab === "history" && <HistoryPanel sessionId={sessionId} onClose={() => setActiveTab("notebook")} />}
+        </main>
 
-  const center = (
-    <div className="relative flex flex-col h-full">
-      <TabBar
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        dirty={dirty}
-        onConfirm={handleConfirm}
-        onHistory={() => setShowHistory((v) => !v)}
-      />
-
-      <div className="flex-grow overflow-hidden">
-        {activeTab === "notebook" ? (
-          <NotebookPane />
-        ) : (
-          <StoryPane sessionId={params.id} />
-        )}
+        {/* ── Right Chat Sidebar ────────────────────────────── */}
+        <ChatSidebar sessionId={sessionId} collapsed={!chatOpen} onToggle={() => setChatOpen((v) => !v)} />
       </div>
-      {showHistory && (
-        <HistoryPanel
-          sessionId={params.id}
-          onClose={() => setShowHistory(false)}
-        />
-      )}
     </div>
   );
-
-  const right = <ChatSidebar sessionId={params.id} />;
-
-  return <ThreeColumnLayout left={left} center={center} right={right} />;
 }

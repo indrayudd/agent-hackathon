@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { AgentActivity } from "@/stores/notebookStore";
+import type { ActivityLogEntry, AgentActivity } from "@/stores/notebookStore";
 
 /* ── Cell source summarizer ─────────────────────────────── */
 
@@ -60,6 +60,92 @@ export function summarizeCellSource(source: string, cellType?: "code" | "markdow
     }
   }
   return lines[0]?.startsWith("import") ? "Import libraries" : source.slice(0, 40);
+}
+
+/* ── Activity classification ───────────────────────────── */
+
+const NARRATION_PATTERNS = [
+  /synthesiz/i,
+  /summari[sz]/i,
+  /conclud/i,
+  /key takeaways?/i,
+  /executive summary/i,
+  /story/i,
+  /narrative/i,
+  /report/i,
+  /draft/i,
+  /insight/i,
+];
+
+export function isNarrationUpdate(detail: string): boolean {
+  return NARRATION_PATTERNS.some((pattern) => pattern.test(detail));
+}
+
+export function getActivityLabel(entry: ActivityLogEntry): string {
+  const detail = entry.detail.trim();
+
+  if (entry.activity === "fixing") {
+    return detail.toLowerCase().includes("error") ? "Fixing error" : "Repairing";
+  }
+
+  if (entry.activity === "backtracking") {
+    return "Backtracking";
+  }
+
+  if (entry.activity === "complete") {
+    return "EDA complete";
+  }
+
+  if (entry.activity === "thinking" && isNarrationUpdate(detail)) {
+    return "Synthesizing findings";
+  }
+
+  if (entry.activity === "generating" && isNarrationUpdate(detail) && !entry.cellId) {
+    return "Synthesizing findings";
+  }
+
+  if (entry.cellId) {
+    return summarizeCellSource(detail, entry.cellType);
+  }
+
+  switch (entry.activity) {
+    case "thinking":
+      return "Thinking";
+    case "generating":
+      return "Generating";
+    case "executing":
+      return "Running cell";
+    case "idle":
+      return "Idle";
+    default:
+      return "Agent update";
+  }
+}
+
+export function getActivityDetail(entry: ActivityLogEntry): string {
+  const detail = entry.detail.trim();
+  if (entry.activity === "thinking" && isNarrationUpdate(detail)) {
+    return "Composing the story from recent findings.";
+  }
+  if (entry.activity === "generating" && isNarrationUpdate(detail) && !entry.cellId) {
+    return "Refining the narrative and key takeaways.";
+  }
+  return detail;
+}
+
+export function isCellEntry(entry: ActivityLogEntry): boolean {
+  return Boolean(entry.cellId);
+}
+
+export function getCompactActivityTitle(entry: ActivityLogEntry): string {
+  return entry.cellId ? summarizeCellSource(entry.detail, entry.cellType) : getActivityLabel(entry);
+}
+
+export function getCompactActivitySubtitle(entry: ActivityLogEntry): string {
+  if (entry.cellId) {
+    return entry.phase || (entry.cellType === "markdown" ? "Markdown cell" : "Code cell");
+  }
+  return getActivityDetail(entry);
 }
 
 /* ── SVG Icons (16x16, currentColor) ────────────────────── */
@@ -148,14 +234,17 @@ interface ActivityConfig {
   color: string;
   dotColor: string;
   ringColor: string;
+  cardClass: string;
+  accentClass: string;
+  glyph?: string;
 }
 
 export const ACTIVITY_CONFIG: Record<AgentActivity, ActivityConfig> = {
-  idle:         { Icon: ThinkingIcon, color: "text-gray-400",    dotColor: "bg-gray-300",    ringColor: "ring-gray-200" },
-  thinking:     { Icon: ThinkingIcon, color: "text-purple-600",  dotColor: "bg-purple-400",  ringColor: "ring-purple-300" },
-  generating:   { Icon: CodeIcon,     color: "text-blue-600",    dotColor: "bg-blue-500",    ringColor: "ring-blue-300" },
-  executing:    { Icon: PlayIcon,     color: "text-amber-600",   dotColor: "bg-amber-400",   ringColor: "ring-amber-300" },
-  fixing:       { Icon: WrenchIcon,   color: "text-red-600",     dotColor: "bg-red-400",     ringColor: "ring-red-300" },
-  backtracking: { Icon: RetryIcon,    color: "text-orange-600",  dotColor: "bg-orange-400",  ringColor: "ring-orange-300" },
-  complete:     { Icon: CheckIcon,    color: "text-green-600",   dotColor: "bg-green-500",   ringColor: "ring-green-300" },
+  idle:         { Icon: ThinkingIcon, color: "text-slate-400",   dotColor: "bg-slate-300",   ringColor: "ring-slate-200",   cardClass: "bg-surface-container-low/80 border-outline-variant/60", accentClass: "from-slate-200 to-slate-300" },
+  thinking:     { Icon: ThinkingIcon, color: "text-violet-600",   dotColor: "bg-violet-400",  ringColor: "ring-violet-300",  cardClass: "bg-violet-50/80 border-violet-200/80", accentClass: "from-violet-200 to-indigo-200" },
+  generating:   { Icon: CodeIcon,     color: "text-blue-600",    dotColor: "bg-blue-500",    ringColor: "ring-blue-300",    cardClass: "bg-blue-50/80 border-blue-200/80", accentClass: "from-blue-200 to-sky-200" },
+  executing:    { Icon: PlayIcon,     color: "text-amber-600",   dotColor: "bg-amber-400",   ringColor: "ring-amber-300",   cardClass: "bg-amber-50/85 border-amber-200/80", accentClass: "from-amber-200 to-yellow-200", glyph: "play_arrow" },
+  fixing:       { Icon: WrenchIcon,   color: "text-rose-600",    dotColor: "bg-rose-500",    ringColor: "ring-rose-300",    cardClass: "bg-rose-50/90 border-rose-200/80", accentClass: "from-rose-200 to-red-200", glyph: "build" },
+  backtracking: { Icon: RetryIcon,    color: "text-orange-600",  dotColor: "bg-orange-500",  ringColor: "ring-orange-300",  cardClass: "bg-orange-50/90 border-orange-200/80", accentClass: "from-orange-200 to-amber-200", glyph: "replay" },
+  complete:     { Icon: CheckIcon,    color: "text-emerald-600", dotColor: "bg-emerald-500", ringColor: "ring-emerald-300", cardClass: "bg-emerald-50/90 border-emerald-200/80", accentClass: "from-emerald-200 to-green-200", glyph: "check_circle" },
 };

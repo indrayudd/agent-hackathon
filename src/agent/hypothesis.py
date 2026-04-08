@@ -48,6 +48,7 @@ def generate_hypotheses(
 
     prompt = f"""You are an expert data analyst. Based on these initial EDA findings,
 generate up to 10 hypotheses worth investigating further.
+Prefer 3 to 5 strong hypotheses if enough evidence exists.
 
 Dataset: {row_count} rows x {col_count} cols
 Columns: {', '.join(columns[:20])}
@@ -71,12 +72,82 @@ Respond with a JSON array (no markdown fencing):
 
 Rules:
 - Maximum 10 hypotheses
+- Prefer 3 to 5 hypotheses when the findings support it
 - Priority 1 = most important
 - eda_rules = which EDA rules from the rulebook this addresses
 - Use ONLY column names from the list above
 - Each hypothesis should be SPECIFIC and TESTABLE with code
 - Don't include vague hypotheses like "explore the data more"
 """
+
+    def _dedupe_and_sort(items: list[Hypothesis]) -> list[Hypothesis]:
+        seen: set[tuple[str, tuple[str, ...]]] = set()
+        deduped: list[Hypothesis] = []
+        for hyp in items:
+            key = (hyp.title.strip().lower(), tuple(hyp.relevant_cols))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hyp)
+        deduped.sort(key=lambda h: h.priority)
+        return deduped
+
+    def _fallback_hypotheses() -> list[Hypothesis]:
+        fallback: list[Hypothesis] = []
+
+        if len(numeric_cols) >= 2:
+            fallback.append(Hypothesis(
+                id="h1",
+                title=f"Relationship between {numeric_cols[0]} and {numeric_cols[1]}",
+                description=(
+                    f"Test whether {numeric_cols[0]} and {numeric_cols[1]} have a linear, nonlinear, "
+                    "or regime-dependent relationship that the initial summary may have obscured."
+                ),
+                priority=1,
+                relevant_cols=numeric_cols[:2],
+                eda_rules=[25, 26],
+            ))
+
+        if time_col and numeric_cols:
+            fallback.append(Hypothesis(
+                id="h2",
+                title=f"Temporal behavior in {numeric_cols[0]}",
+                description=(
+                    f"Check whether {numeric_cols[0]} shows trend, seasonality, or local regime shifts over time."
+                ),
+                priority=2,
+                relevant_cols=[numeric_cols[0], time_col],
+                eda_rules=[14, 18, 21],
+            ))
+
+        if numeric_cols:
+            focus_col = numeric_cols[min(2, len(numeric_cols) - 1)]
+            fallback.append(Hypothesis(
+                id="h3",
+                title=f"Outlier structure in {focus_col}",
+                description=(
+                    f"Investigate whether extreme values in {focus_col} cluster around specific conditions "
+                    "or form a separate operating regime."
+                ),
+                priority=3,
+                relevant_cols=[focus_col],
+                eda_rules=[8, 9, 10],
+            ))
+
+        if len(fallback) < 3 and len(numeric_cols) >= 1:
+            fallback.append(Hypothesis(
+                id=f"h{len(fallback)+1}",
+                title=f"Distribution shape of {numeric_cols[0]}",
+                description=(
+                    f"Assess whether {numeric_cols[0]} is skewed, multimodal, or heavy-tailed enough to change "
+                    "the interpretation of downstream modeling."
+                ),
+                priority=len(fallback) + 1,
+                relevant_cols=[numeric_cols[0]],
+                eda_rules=[3, 4, 5],
+            ))
+
+        return _dedupe_and_sort(fallback)
 
     try:
         from src.config.config import get_chat_model
@@ -96,7 +167,7 @@ Rules:
             text = text.strip()
 
         raw = json.loads(text)
-        hypotheses = []
+        hypotheses: list[Hypothesis] = []
         for h in raw[:10]:
             hypotheses.append(Hypothesis(
                 id=h.get("id", f"h{len(hypotheses)+1}"),
@@ -107,33 +178,25 @@ Rules:
                 eda_rules=h.get("eda_rules", []),
             ))
 
-        hypotheses.sort(key=lambda h: h.priority)
+        hypotheses = _dedupe_and_sort(hypotheses)
+        if len(hypotheses) < 3:
+            fallback = _fallback_hypotheses()
+            existing_keys = {(h.title.strip().lower(), tuple(h.relevant_cols)) for h in hypotheses}
+            for hyp in fallback:
+                key = (hyp.title.strip().lower(), tuple(hyp.relevant_cols))
+                if key not in existing_keys:
+                    hypotheses.append(hyp)
+                    existing_keys.add(key)
+                if len(hypotheses) >= 3:
+                    break
+            hypotheses = _dedupe_and_sort(hypotheses)
+
         _LOG.info("Generated %d hypotheses", len(hypotheses))
         return hypotheses
 
     except Exception as exc:
         _LOG.warning("Hypothesis generation failed: %s", exc)
-        # Fallback: generate basic hypotheses from findings
-        fallback = []
-        if numeric_cols and len(numeric_cols) >= 2:
-            fallback.append(Hypothesis(
-                id="h1",
-                title=f"Relationship between {numeric_cols[0]} and {numeric_cols[1]}",
-                description=f"Investigate the nature of the relationship between {numeric_cols[0]} and {numeric_cols[1]} — is it linear, polynomial, or regime-dependent?",
-                priority=1,
-                relevant_cols=numeric_cols[:2],
-                eda_rules=[25, 26],
-            ))
-        if time_col and numeric_cols:
-            fallback.append(Hypothesis(
-                id="h2",
-                title=f"Temporal patterns in {numeric_cols[0]}",
-                description=f"Check if {numeric_cols[0]} has trends, regime changes, or seasonality beyond what was detected in the initial pass.",
-                priority=2,
-                relevant_cols=[numeric_cols[0]],
-                eda_rules=[14, 18, 21],
-            ))
-        return fallback
+        return _fallback_hypotheses()
 
 
 def hypothesis_from_user_question(

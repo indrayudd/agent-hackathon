@@ -43,47 +43,63 @@ def run_agent(
     file_format = fmt_map.get(ext, "csv")
 
     current_phase = ""
+    last_code_cell_id: str | None = None
 
     def _think(content: str):
         push_event(session_id, {"type": "thinking", "content": content})
         time.sleep(0.1)
 
-    def _write_and_run(code: str, cell_type: str = "code") -> tuple[list[dict], str | None]:
-        """Write a cell, execute it, return (outputs, error)."""
-        cell_id = state.next_cell_id()
-        state.cell_phases[cell_id] = current_phase
+    def _write_and_run(
+        code: str,
+        cell_type: str = "code",
+        *,
+        cell_id: str | None = None,
+        overwrite: bool = False,
+    ) -> tuple[str, list[dict], str | None]:
+        """Write or overwrite a cell, execute it, return (cell_id, outputs, error)."""
+        nonlocal last_code_cell_id
+        target_cell_id = cell_id or state.next_cell_id()
+        state.cell_phases[target_cell_id] = current_phase
+        replacement = overwrite and cell_id is not None
+        if replacement:
+            push_event(session_id, {"type": "cell_delete", "cell_id": target_cell_id})
+            time.sleep(0.05)
         push_event(session_id, {
             "type": "cell_write",
-            "cell_id": cell_id,
+            "cell_id": target_cell_id,
             "cell_type": cell_type,
             "source": code,
+            "overwrite": replacement,
         })
         time.sleep(0.1)
 
         if cell_type == "markdown":
-            return [], None
+            state.register_cell(target_cell_id, "markdown", code)
+            return target_cell_id, [], None
 
-        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id})
-        outputs, error = execute_code(session_id, code)
+        last_code_cell_id = target_cell_id
+        push_event(session_id, {"type": "cell_executing", "cell_id": target_cell_id})
+        outputs, error = execute_code(session_id, code, cell_id=target_cell_id)
 
         if error:
             push_event(session_id, {
                 "type": "cell_error",
-                "cell_id": cell_id,
+                "cell_id": target_cell_id,
                 "error": error,
                 "traceback": [o.get("traceback", []) for o in outputs if o.get("output_type") == "error"],
             })
         else:
             push_event(session_id, {
                 "type": "cell_output",
-                "cell_id": cell_id,
+                "cell_id": target_cell_id,
                 "outputs": outputs,
             })
 
+        state.register_cell(target_cell_id, "code", code, outputs)
         time.sleep(0.05)
-        return outputs, error
+        return target_cell_id, outputs, error
 
-    def _transition(phase: str, message: str = ""):
+    def _transition(phase: str, message: str = "", *, render_cell: bool = True):
         nonlocal current_phase
         if phase != current_phase:
             current_phase = phase
@@ -92,16 +108,17 @@ def run_agent(
                 "phase": phase,
                 "message": message,
             })
-            # Write phase header as markdown cell with divider
-            header = f"---\n\n## {phase}"
-            if message:
-                header += f"\n\n{message}"
-            _write_and_run(header, "markdown")
+            if render_cell:
+                # Write phase header as markdown cell with divider
+                header = f"---\n\n## {phase}"
+                if message:
+                    header += f"\n\n{message}"
+                _write_and_run(header, "markdown")
 
-    def _backtrack_and_fix(error: str, fix_code: str, reason: str):
-        push_event(session_id, {"type": "backtrack", "reason": reason})
+    def _backtrack_and_fix(error: str, fix_code: str, reason: str, failed_cell_id: str):
+        push_event(session_id, {"type": "backtrack", "reason": reason, "cell_id": failed_cell_id})
         time.sleep(0.2)
-        return _write_and_run(fix_code)
+        return _write_and_run(fix_code, cell_id=failed_cell_id, overwrite=True)
 
     def _extract_output_text(outputs: list[dict]) -> str:
         """Extract readable text from cell outputs."""
@@ -166,7 +183,7 @@ def run_agent(
 
         if step["follow_up"] and step["code"]:
             _think(step["thinking"])
-            fu_outputs, fu_error = _write_and_run(step["code"], step["cell_type"])
+            _, fu_outputs, fu_error = _write_and_run(step["code"], step["cell_type"])
             if fu_error:
                 _try_fix_error(fu_error, goal, state, goals)
 
@@ -180,9 +197,65 @@ def run_agent(
             columns=state.columns,
             error_context=error,
         )
-        if step["code"]:
-            push_event(session_id, {"type": "backtrack", "reason": step["thinking"] or f"Fixing: {error[:100]}"})
-            _write_and_run(step["code"], step["cell_type"])
+        failed_cell_id = last_code_cell_id
+
+        def _skip_cell(reason: str):
+            """Remove the failed cell and replace with a markdown skip note."""
+            if not failed_cell_id:
+                return
+            push_event(session_id, {"type": "cell_delete", "cell_id": failed_cell_id})
+            time.sleep(0.05)
+            _write_and_run(
+                f"> **Skipped step** — `{reason[:150]}`",
+                "markdown",
+                cell_id=failed_cell_id,
+                overwrite=True,
+            )
+
+        if not step["code"] or not failed_cell_id:
+            # LLM couldn't produce a fix — skip the cell
+            if failed_cell_id:
+                state.add_error(current_phase, error, "No fix generated")
+                _skip_cell(error)
+            return
+
+        # Attempt 1: first fix
+        _, _, fix_error1 = _backtrack_and_fix(
+            error,
+            step["code"],
+            step["thinking"] or f"Retrying with corrected code: {error[:100]}",
+            failed_cell_id,
+        )
+        if not fix_error1:
+            return  # Fixed!
+
+        # Attempt 2: second fix with both errors as context
+        _think("Second attempt also failed, trying alternative approach")
+        second_fix = decide_next_step(
+            state_summary=state.summarize(),
+            last_output="",
+            current_phase=goal.phase,
+            goals_remaining=[g.name for g in goals if g.name not in state.phases_completed],
+            columns=state.columns,
+            error_context=f"Original error: {error}\nFirst fix error: {fix_error1}",
+        )
+        if not second_fix or not second_fix.get("code"):
+            state.add_error(current_phase, error, "No alternative fix found")
+            _skip_cell(error)
+            return
+
+        _, _, fix_error2 = _backtrack_and_fix(
+            fix_error1,
+            second_fix["code"],
+            f"Alternative fix attempt: {fix_error1[:80]}",
+            failed_cell_id,
+        )
+        if not fix_error2:
+            return  # Fixed on second attempt!
+
+        # All attempts exhausted — skip the cell
+        state.add_error(current_phase, error, "Failed after 3 attempts")
+        _skip_cell(error)
 
     # ---- Title cell ----
     _write_and_run(
@@ -203,13 +276,14 @@ def run_agent(
         try:
             if goal.name == "load_dataset":
                 _think(f"Loading {filename} ({file_format} format)...")
-                outputs, error = _write_and_run(ct.load_dataset_code(filename, file_format))
+                failed_cell_id, outputs, error = _write_and_run(ct.load_dataset_code(filename, file_format))
                 if error:
                     _think("Load failed. Trying with different encoding...")
-                    outputs, error = _backtrack_and_fix(
+                    _, outputs, error = _backtrack_and_fix(
                         error,
                         f'df = pd.read_csv("{filename}", encoding="latin-1", on_bad_lines="skip")\nprint(f"Loaded {{len(df)}} rows x {{len(df.columns)}} columns")\ndf.head()',
-                        "CSV parse error — retrying with latin-1 encoding and skipping bad lines"
+                        "CSV parse error — retrying with latin-1 encoding and skipping bad lines",
+                        failed_cell_id,
                     )
                 if not error:
                     state.dataset_loaded = True
@@ -227,7 +301,7 @@ def run_agent(
                             except (ValueError, IndexError):
                                 pass
                     # Get column names into state
-                    col_outputs, _ = _write_and_run("print(list(df.columns))")
+                    _, col_outputs, _ = _write_and_run("print(list(df.columns))")
                     col_text = _extract_output_text(col_outputs)
                     if col_text.strip().startswith("["):
                         try:
@@ -239,7 +313,7 @@ def run_agent(
 
             elif goal.name == "inspect_dtypes":
                 _think("Checking column types to identify datetime, numeric, and categorical columns...")
-                outputs, error = _write_and_run(ct.inspect_dtypes_code())
+                _, outputs, error = _write_and_run(ct.inspect_dtypes_code())
                 if not error:
                     # Parse dtypes from output
                     for o in outputs:
@@ -262,7 +336,7 @@ def run_agent(
 
             elif goal.name == "inspect_describe":
                 _think("Computing statistical summary for all columns...")
-                outputs, error = _write_and_run(ct.inspect_describe_code())
+                _, outputs, error = _write_and_run(ct.inspect_describe_code())
                 _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "parse_datetime":
@@ -276,13 +350,14 @@ def run_agent(
                 if candidates:
                     col = candidates[0]
                     _think(f"'{col}' looks like a datetime column. Parsing it...")
-                    outputs, error = _write_and_run(ct.parse_datetime_code(col))
+                    failed_cell_id, outputs, error = _write_and_run(ct.parse_datetime_code(col))
                     if error:
                         _think(f"Standard parsing failed for '{col}'. Trying with mixed format...")
-                        outputs, error = _backtrack_and_fix(
+                        _, outputs, error = _backtrack_and_fix(
                             error,
                             f'df["{col}"] = pd.to_datetime(df["{col}"], errors="coerce", format="mixed")\nprint(f"Parsed with mixed format. NaT count: {{df[\'{col}\'].isna().sum()}}")\ndf = df.sort_values("{col}").reset_index(drop=True)',
-                            f"DateTime parse failed — retrying with format='mixed'"
+                            f"DateTime parse failed — retrying with format='mixed'",
+                            failed_cell_id,
                         )
                     if not error:
                         state.time_col = col
@@ -296,12 +371,12 @@ def run_agent(
 
             elif goal.name == "check_missing":
                 _think("Auditing missing values across all columns...")
-                outputs, error = _write_and_run(ct.inspect_missing_code())
+                _, outputs, error = _write_and_run(ct.inspect_missing_code())
                 _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "handle_missing":
                 # Check if there are missing values by running a quick check
-                outputs, _ = _write_and_run("missing_count = df.isnull().sum().sum()\nprint(f'Total missing: {missing_count}')")
+                _, outputs, _ = _write_and_run("missing_count = df.isnull().sum().sum()\nprint(f'Total missing: {missing_count}')")
                 has_missing = False
                 for o in outputs:
                     if "Total missing:" in o.get("text", "") and "Total missing: 0" not in o.get("text", ""):
@@ -320,7 +395,7 @@ def run_agent(
 
             elif goal.name == "distributions":
                 _think(f"Plotting distributions for {len(state.numeric_cols)} numeric columns...")
-                outputs, error = _write_and_run(ct.plot_distributions_code(state.numeric_cols))
+                _, outputs, error = _write_and_run(ct.plot_distributions_code(state.numeric_cols))
                 state.add_finding("Univariate Analysis", f"Plotted distributions for {len(state.numeric_cols)} columns")
                 _interpret_and_follow_up(outputs, error, goal, state, goals)
 
@@ -328,7 +403,7 @@ def run_agent(
                 plot_cols = state.numeric_cols[:4] if state.numeric_cols else state.target_cols
                 if plot_cols and state.time_col:
                     _think(f"Plotting time series for: {', '.join(plot_cols[:4])}...")
-                    outputs, error = _write_and_run(ct.plot_time_series_code(state.time_col, plot_cols[:4]))
+                    _, outputs, error = _write_and_run(ct.plot_time_series_code(state.time_col, plot_cols[:4]))
                     state.add_finding("Time Series", f"Plotted time series for {len(plot_cols[:4])} variables")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
@@ -336,7 +411,7 @@ def run_agent(
                 if state.numeric_cols and state.time_col:
                     col = state.numeric_cols[0]
                     _think(f"Checking for seasonal patterns in '{col}'...")
-                    outputs, error = _write_and_run(ct.seasonality_code(state.time_col, col))
+                    _, outputs, error = _write_and_run(ct.seasonality_code(state.time_col, col))
                     state.add_finding("Time Series", f"Checked seasonality for '{col}'")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
@@ -344,7 +419,7 @@ def run_agent(
                 if state.numeric_cols and state.time_col:
                     col = state.numeric_cols[0]
                     _think(f"Computing rolling statistics for '{col}' to detect trends and volatility...")
-                    outputs, error = _write_and_run(ct.rolling_stats_code(state.time_col, col))
+                    _, outputs, error = _write_and_run(ct.rolling_stats_code(state.time_col, col))
                     state.add_finding("Dynamics", f"Computed rolling stats for '{col}'")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
@@ -352,21 +427,21 @@ def run_agent(
                 if state.numeric_cols:
                     col = state.numeric_cols[0]
                     _think(f"Detecting outliers in '{col}' using IQR method...")
-                    outputs, error = _write_and_run(ct.outlier_detection_code(col))
+                    _, outputs, error = _write_and_run(ct.outlier_detection_code(col))
                     state.add_finding("Dynamics", f"Outlier detection on '{col}'")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "correlations":
                 if len(state.numeric_cols) >= 2:
                     _think(f"Computing correlation matrix for {len(state.numeric_cols)} numeric columns...")
-                    outputs, error = _write_and_run(ct.correlation_code(state.numeric_cols))
+                    _, outputs, error = _write_and_run(ct.correlation_code(state.numeric_cols))
                     state.add_finding("Correlations", "Computed pairwise correlations")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "train_test_split":
                 if state.time_col:
                     _think("Splitting data chronologically (80/20) for model readiness...")
-                    outputs, error = _write_and_run(ct.train_test_split_code(state.time_col))
+                    _, outputs, error = _write_and_run(ct.train_test_split_code(state.time_col))
                     state.add_finding("Train/Test Split", "Chronological 80/20 split")
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
@@ -393,7 +468,7 @@ def run_agent(
         kg.add_fact(f.get("finding", ""), f.get("phase", ""), f.get("cell_id"))
 
     # Generate hypotheses from what we've learned
-    _transition("Investigation Phase", "Generating hypotheses from initial findings...")
+    _transition("Investigation Phase", "Generating hypotheses from initial findings...", render_cell=False)
     # Write a prominent divider between pass-1 EDA and investigations
     findings_summary = "\n".join(f"- {f.get('finding', '')}" for f in state.findings if f.get('finding'))
     _write_and_run(
@@ -415,7 +490,7 @@ def run_agent(
             row_count=state.row_count,
             col_count=state.col_count,
         )
-        hypotheses = hypotheses[:1]  # Cap at 1 for demo speed
+        hypotheses = hypotheses[:3]  # Execute up to three bounded deep dives
     except Exception as exc:
         _LOG.warning("Hypothesis generation failed: %s", exc)
         hypotheses = []
@@ -433,6 +508,7 @@ def run_agent(
             _transition(
                 f"Hypothesis {i+1}/{len(hypotheses)}: {hyp.title}",
                 hyp.description,
+                render_cell=False,
             )
             # Prominent hypothesis header with context
             cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
@@ -502,7 +578,7 @@ def run_agent(
         state.cell_count = cell_counter[0]
 
     # Write conclusions
-    _transition("Conclusions", "Synthesizing all findings...")
+    _transition("Conclusions", "Synthesizing all findings...", render_cell=False)
     conclusions = kg.get_top_conclusions(5)
     conclusion_items = "\n".join(f"1. {c}" for c in conclusions) if conclusions else "No conclusions drawn."
     _write_and_run(

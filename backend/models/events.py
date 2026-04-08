@@ -16,6 +16,7 @@ class CellWriteEvent(BaseModel):
     cell_id: str
     cell_type: Literal["code", "markdown"] = "code"
     source: str
+    overwrite: bool = False
 
 
 class CellExecutingEvent(BaseModel):
@@ -42,6 +43,11 @@ class CellUpdateEvent(BaseModel):
     source: str
 
 
+class CellDeleteEvent(BaseModel):
+    type: Literal["cell_delete"] = "cell_delete"
+    cell_id: str
+
+
 class PhaseTransitionEvent(BaseModel):
     type: Literal["phase_transition"] = "phase_transition"
     phase: str
@@ -66,6 +72,7 @@ AgentEvent = (
     | CellOutputEvent
     | CellErrorEvent
     | CellUpdateEvent
+    | CellDeleteEvent
     | PhaseTransitionEvent
     | BacktrackEvent
     | CompleteEvent

@@ -30,10 +30,10 @@ export default function ChatInput({ onSend }: ChatInputProps) {
   };
 
   return (
-    <div className="border-t border-gray-200 p-2">
-      <div className="flex gap-2">
+    <div className="p-4 border-t border-outline-variant/10 bg-surface-container-lowest">
+      <div className="relative">
         <textarea
-          className="flex-1 resize-none rounded border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="w-full bg-surface-container-low border border-outline-variant/20 rounded-xl p-3 pr-10 text-xs focus:ring-2 focus:ring-primary focus:border-transparent resize-none font-body text-on-surface placeholder:text-on-surface-variant/50 outline-none"
           rows={2}
           placeholder={pipelineRunning ? "Agent is running EDA..." : "Ask about your data..."}
           value={value}
@@ -42,16 +42,21 @@ export default function ChatInput({ onSend }: ChatInputProps) {
           disabled={isTyping}
         />
         <button
-          className="self-end rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+          className="absolute bottom-3 right-3 p-1.5 bg-primary text-white rounded-lg disabled:opacity-40 transition-colors hover:bg-primary/90"
           onClick={submit}
           disabled={isTyping || !value.trim()}
         >
-          Send
+          <span className="material-symbols-outlined text-sm">arrow_upward</span>
         </button>
       </div>
-      {isTyping && (
-        <p className="mt-1 text-xs text-gray-400">Agent is typing...</p>
-      )}
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-[10px] text-on-surface-variant font-body">
+          {isTyping ? "Agent is typing..." : "Connected to GPT-5.4 Nano"}
+        </p>
+        <p className="text-[10px] text-on-surface-variant font-body">
+          Shift + Enter to send
+        </p>
+      </div>
     </div>
   );
 }

@@ -9,9 +9,14 @@ import threading
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
+import nbformat
 
 from backend.services.session_manager import get_session_dir
 from backend.routers.stream import push_event
+from src.reporting.plot_contract import (
+    plot_artifacts_from_outputs,
+    plot_specs_by_cell,
+)
 
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
@@ -48,9 +53,26 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             }, default=str, indent=2)
         )
 
+        # Save notebook.ipynb from accumulated cell data
+        try:
+            nb = nbformat.v4.new_notebook()
+            for entry in state.cell_registry:
+                if entry["cell_type"] == "markdown":
+                    cell = nbformat.v4.new_markdown_cell(entry["source"])
+                else:
+                    cell = nbformat.v4.new_code_cell(entry["source"])
+                    cell.outputs = [nbformat.v4.new_output(**o) for o in (entry.get("outputs") or [])]
+                cell.id = entry["id"]
+                nb.cells.append(cell)
+            nbformat.write(nb, str(session_dir / "notebook.ipynb"))
+            _LOG.info("Notebook saved: %d cells for session %s", len(nb.cells), session_id)
+        except Exception as exc:
+            _LOG.warning("Notebook save failed for session %s: %s", session_id, exc)
+
         # Generate story from knowledge graph (if available) or findings
         try:
             import datetime
+            plot_specs_map = plot_specs_by_cell(session_dir)
 
             # Use knowledge graph if the investigation phase ran
             kg = getattr(state, "knowledge_graph", None)
@@ -70,8 +92,51 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                         "title": phase,
                         "content": "\n".join(f"- {f}" for f in flist),
                         "cell_ids": phase_cells,
+                        "plot_cell_ids": phase_cells,
+                        "plots": [],
                     })
                 conclusions = [f.get("finding", "") for f in state.findings[:5]]
+
+            # Ensure sections have cell_ids from the agent's cell_phases map
+            for section in sections:
+                phase = section.get("phase", "")
+                if not section.get("cell_ids"):
+                    phase_cells = [cid for cid, p in state.cell_phases.items() if p == phase]
+                    if phase_cells:
+                        section["cell_ids"] = phase_cells
+                if not section.get("plot_cell_ids"):
+                    section["plot_cell_ids"] = section.get("cell_ids", [])
+
+            # Attach plot artifacts from the generated notebook whenever possible.
+            nb_path = session_dir / "notebook.ipynb"
+            if nb_path.exists():
+                try:
+                    nb = nbformat.read(str(nb_path), as_version=4)
+                    cell_map = {}
+                    for cell in nb.cells:
+                        cell_id = cell.get("id")
+                        if cell_id:
+                            cell_map[str(cell_id)] = cell
+                    for section in sections:
+                        plot_cell_ids = section.get("plot_cell_ids") or section.get("cell_ids") or []
+                        plots: list[dict] = []
+                        for cell_id in plot_cell_ids:
+                            cell = cell_map.get(str(cell_id))
+                            if not cell:
+                                continue
+                            plots.extend(
+                                plot_artifacts_from_outputs(
+                                    cell.get("outputs", []) or [],
+                                    title=section.get("title", ""),
+                                    caption=section.get("visual_caption", ""),
+                                    source_cell_id=str(cell_id),
+                                    plot_specs=plot_specs_map.get(str(cell_id), []),
+                                )
+                            )
+                        if plots:
+                            section["plots"] = plots
+                except Exception as plot_exc:
+                    _LOG.warning("Plot artifact bridge failed for session %s: %s", session_id, plot_exc)
 
             # LLM narrative for executive summary
             narrative = ""

@@ -5,6 +5,8 @@ import json
 import pathlib
 import logging
 
+from src.reporting.plot_contract import normalize_plot_artifacts
+
 _LOG = logging.getLogger(__name__)
 SESSIONS_DIR = pathlib.Path(__file__).resolve().parents[2] / "sessions"
 
@@ -34,7 +36,22 @@ def _story_to_markdown(story: dict) -> str:
     lines = [f"# {story.get('title', 'EDA Report')}", "", story.get("executive_summary", ""), ""]
     for section in story.get("sections", []):
         lines.append(f"## {section.get('title', section.get('phase', ''))}")
-        lines.append(section.get("content", ""))
+        content = section.get("content", "") or section.get("prose", "")
+        lines.append(content)
+        plots = normalize_plot_artifacts(section.get("plots") or [])
+        for plot in plots[:6]:
+            family = plot.get("chart_family") or "unknown"
+            intent = plot.get("semantic_intent") or "unknown"
+            if plot.get("kind") == "image" and plot.get("source"):
+                caption = plot.get("title") or section.get("title", "")
+                if family != "unknown" or intent != "unknown":
+                    caption = f"{caption} ({family}, {intent})".strip()
+                lines.append(f"![{caption}]({plot.get('source')})")
+            elif plot.get("source"):
+                label = plot.get("title") or section.get("title", "")
+                if family != "unknown" or intent != "unknown":
+                    label = f"{label} [{family} / {intent}]".strip()
+                lines.append(f"- {label}")
         lines.append("")
     return "\n".join(lines)
 

@@ -8,6 +8,15 @@ from __future__ import annotations
 import json
 
 
+def _plot_spec_runtime_guard() -> str:
+    return '''try:
+    emit_plot_spec
+except NameError:
+    def emit_plot_spec(*args, **kwargs):
+        return None
+'''
+
+
 def load_dataset_code(filename: str, file_format: str = "csv") -> str:
     """Generate code to load a dataset."""
     if file_format in ("csv", "tsv"):
@@ -107,13 +116,14 @@ print(f"After interpolation: {{df['{col}'].isna().sum()}} missing")'''
 
 def plot_time_series_code(time_col: str, value_cols: list[str]) -> str:
     cols_str = json.dumps(value_cols)
-    return f'''fig, axes = plt.subplots(len({cols_str}), 1, figsize=(14, 3 * len({cols_str})), sharex=True)
+    return _plot_spec_runtime_guard() + f'''fig, axes = plt.subplots(len({cols_str}), 1, figsize=(14, 3 * len({cols_str})), sharex=True)
 if len({cols_str}) == 1:
     axes = [axes]
 for ax, col in zip(axes, {cols_str}):
     ax.plot(df["{time_col}"], df[col], linewidth=0.8)
     ax.set_ylabel(col)
     ax.set_title(col)
+    emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title=col, caption=f"Time series for {{col}}", chart_family="line", semantic_intent="trend", x_axis_role="time", y_axis_role="measure", source=dict(data=[dict(type="scatter", mode="lines", name=col, x=df["{time_col}"].astype(str).tolist(), y=df[col].tolist())], layout=dict(title=col, xaxis=dict(title="{time_col}"), yaxis=dict(title=col)))))
 axes[-1].set_xlabel("{time_col}")
 plt.tight_layout()
 plt.show()'''
@@ -121,7 +131,7 @@ plt.show()'''
 
 def plot_distributions_code(numeric_cols: list[str]) -> str:
     cols_str = json.dumps(numeric_cols[:8])  # max 8 plots
-    return f'''cols = {cols_str}
+    return _plot_spec_runtime_guard() + f'''cols = {cols_str}
 n = len(cols)
 ncols_plot = min(n, 4)
 nrows_plot = (n + ncols_plot - 1) // ncols_plot
@@ -132,6 +142,7 @@ for i, col in enumerate(cols):
     axes[i].set_title(col)
     axes[i].axvline(df[col].mean(), color="red", linestyle="--", label="mean")
     axes[i].legend(fontsize=8)
+    emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title=col, caption=f"Distribution for {{col}}", chart_family="histogram", semantic_intent="distribution", x_axis_role="numeric", y_axis_role="count", source=dict(data=[dict(type="histogram", name=col, x=df[col].dropna().tolist())], layout=dict(title=col, xaxis=dict(title=col), yaxis=dict(title="Count")))))
 for j in range(i + 1, len(axes)):
     axes[j].set_visible(False)
 plt.tight_layout()
@@ -139,7 +150,7 @@ plt.show()'''
 
 
 def seasonality_code(time_col: str, value_col: str) -> str:
-    return f'''from scipy import stats
+    return _plot_spec_runtime_guard() + f'''from scipy import stats
 
 df["_hour"] = df["{time_col}"].dt.hour
 df["_dow"] = df["{time_col}"].dt.day_name()
@@ -153,6 +164,7 @@ if df["_hour"].nunique() > 1:
     axes[0].bar(hourly.index, hourly.values)
     axes[0].set_title("Avg by Hour")
     axes[0].set_xlabel("Hour")
+    emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title="Avg by Hour", caption="Average by hour of day", chart_family="bar", semantic_intent="comparison", x_axis_role="ordinal", y_axis_role="measure", source=dict(data=[dict(type="bar", name="{value_col}", x=hourly.index.astype(int).tolist(), y=hourly.values.tolist())], layout=dict(title="Avg by Hour", xaxis=dict(title="Hour"), yaxis=dict(title="Average {value_col}")))))
 
 # Day of week pattern
 if df["_dow"].nunique() > 1:
@@ -162,6 +174,7 @@ if df["_dow"].nunique() > 1:
     axes[1].set_xticks(range(len(dow_data)))
     axes[1].set_xticklabels([d[:3] for d in dow_data.index], rotation=45)
     axes[1].set_title("Avg by Day of Week")
+    emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title="Avg by Day of Week", caption="Average by weekday", chart_family="bar", semantic_intent="comparison", x_axis_role="ordinal", y_axis_role="measure", source=dict(data=[dict(type="bar", name="{value_col}", x=dow_data.index.tolist(), y=dow_data.values.tolist())], layout=dict(title="Avg by Day of Week", xaxis=dict(title="Day"), yaxis=dict(title="Average {value_col}")))))
 
 # Monthly pattern
 if df["_month"].nunique() > 1:
@@ -169,6 +182,7 @@ if df["_month"].nunique() > 1:
     axes[2].bar(monthly.index, monthly.values)
     axes[2].set_title("Avg by Month")
     axes[2].set_xlabel("Month")
+    emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title="Avg by Month", caption="Average by month", chart_family="bar", semantic_intent="comparison", x_axis_role="ordinal", y_axis_role="measure", source=dict(data=[dict(type="bar", name="{value_col}", x=monthly.index.astype(int).tolist(), y=monthly.values.tolist())], layout=dict(title="Avg by Month", xaxis=dict(title="Month"), yaxis=dict(title="Average {value_col}")))))
 
 plt.tight_layout()
 plt.show()
@@ -179,7 +193,7 @@ df.drop(columns=["_hour", "_dow", "_month"], inplace=True, errors="ignore")'''
 
 def correlation_code(numeric_cols: list[str]) -> str:
     cols_str = json.dumps(numeric_cols[:15])
-    return f'''corr = df[{cols_str}].corr()
+    return _plot_spec_runtime_guard() + f'''corr = df[{cols_str}].corr()
 fig, ax = plt.subplots(figsize=(10, 8))
 im = ax.imshow(corr, cmap="RdBu_r", vmin=-1, vmax=1)
 ax.set_xticks(range(len(corr.columns)))
@@ -188,6 +202,7 @@ ax.set_xticklabels(corr.columns, rotation=45, ha="right", fontsize=8)
 ax.set_yticklabels(corr.columns, fontsize=8)
 plt.colorbar(im, ax=ax)
 ax.set_title("Correlation Matrix")
+emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title="Correlation Matrix", caption="Pairwise correlation heatmap", chart_family="heatmap", semantic_intent="matrix", x_axis_role="category", y_axis_role="category", source=dict(data=[dict(type="heatmap", name="Correlation", x=list(corr.columns), y=list(corr.index), z=corr.values.tolist(), colorscale="RdBu_r", zmin=-1, zmax=1)], layout=dict(title="Correlation Matrix", xaxis=dict(title="Variables"), yaxis=dict(title="Variables")))))
 plt.tight_layout()
 plt.show()
 
@@ -207,7 +222,7 @@ else:
 
 
 def rolling_stats_code(time_col: str, value_col: str, window: int = 30) -> str:
-    return f'''rolling_mean = df["{value_col}"].rolling({window}, center=True).mean()
+    return _plot_spec_runtime_guard() + f'''rolling_mean = df["{value_col}"].rolling({window}, center=True).mean()
 rolling_std = df["{value_col}"].rolling({window}, center=True).std()
 
 fig, ax = plt.subplots(figsize=(14, 5))
@@ -217,6 +232,7 @@ ax.fill_between(df["{time_col}"], rolling_mean - rolling_std, rolling_mean + rol
 ax.set_title(f"{value_col} \u2014 Rolling Statistics (window={window})")
 ax.legend()
 ax.set_xlabel("{time_col}")
+emit_plot_spec(dict(kind="plotly", mime_type="application/vnd.plotly.v1+json", title="{value_col} Rolling Statistics", caption="Raw series with rolling mean and spread", chart_family="line", semantic_intent="trend", x_axis_role="time", y_axis_role="measure", source=dict(data=[dict(type="scatter", mode="lines", name="Raw", x=df["{time_col}"].astype(str).tolist(), y=df["{value_col}"].tolist()), dict(type="scatter", mode="lines", name=f"{window}-pt Rolling Mean", x=df["{time_col}"].astype(str).tolist(), y=rolling_mean.tolist())], layout=dict(title="{value_col} Rolling Statistics", xaxis=dict(title="{time_col}"), yaxis=dict(title="{value_col}")))))
 plt.tight_layout()
 plt.show()'''
 

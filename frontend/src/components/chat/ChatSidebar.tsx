@@ -9,12 +9,13 @@ import ChatInput from "./ChatInput";
 
 interface ChatSidebarProps {
   sessionId: string;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }
 
-export default function ChatSidebar({ sessionId }: ChatSidebarProps) {
+export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSidebarProps) {
   const messages = useChatStore((s) => s.messages);
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
-  const currentPhase = useNotebookStore((s) => s.currentPhase);
   const { sendMessage } = useChat(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -23,39 +24,61 @@ export default function ChatSidebar({ sessionId }: ChatSidebarProps) {
   }, [messages.length]);
 
   const handleViewCell = useCallback((cellId: string) => {
-    // Find the cell element in the DOM and scroll to it
     const el = document.getElementById(`cell-${cellId}`);
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.classList.add("ring-2", "ring-blue-400");
-      setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2000);
+      el.classList.add("ring-2", "ring-primary");
+      setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 2000);
     }
   }, []);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-800">Chat</h2>
-        {pipelineRunning && (
-          <span className="flex items-center gap-1.5 text-xs text-blue-600">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-            {currentPhase || "Analyzing..."}
-          </span>
-        )}
+    <div className={`bg-surface-container-low border-l border-outline-variant/20 flex flex-col shrink-0 h-full transition-[width] duration-200 overflow-hidden ${collapsed ? "w-0 border-l-0" : "w-80"}`}>
+      {/* Header */}
+      <div className="p-4 flex items-center justify-between border-b border-outline-variant/10 min-w-[19rem]">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
+          <h2 className="text-sm font-semibold font-headline text-on-surface">AgenticEDA</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          {pipelineRunning && (
+            <span className="flex items-center gap-1.5 rounded-full bg-primary/8 px-2.5 py-1 text-[10px] font-medium text-primary">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+              Analyzing
+            </span>
+          )}
+          {onToggle && (
+            <button onClick={onToggle} className="material-symbols-outlined text-sm text-on-surface-variant hover:text-primary cursor-pointer">
+              chevron_right
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-grow overflow-y-auto px-3 py-4">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !pipelineRunning && (
-          <div className="text-center text-gray-400 text-sm mt-8">
-            <p>Ask questions about your data</p>
-            <p className="text-xs mt-1">or request additional analysis</p>
-          </div>
-        )}
-        {messages.length === 0 && pipelineRunning && (
-          <div className="text-center text-gray-400 text-sm mt-8 px-4">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="font-medium text-gray-600">Agent is analyzing your data</p>
-            <p className="text-xs mt-1">Activity will appear here as the analysis progresses</p>
+          <div className="mt-8 space-y-4">
+            <div className="text-center text-on-surface-variant text-sm">
+              <p className="font-body">Ask questions about your data</p>
+              <p className="text-xs mt-1">or try a suggested action below</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => sendMessage("Clean up and fix data quality issues")}
+                className="flex items-center gap-2 p-2.5 rounded-xl bg-surface-container-lowest border border-outline-variant/10 text-xs text-on-surface hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-primary text-base">auto_fix_high</span>
+                Cleanup Data
+              </button>
+              <button
+                onClick={() => sendMessage("Explain the key variables in this dataset")}
+                className="flex items-center gap-2 p-2.5 rounded-xl bg-surface-container-lowest border border-outline-variant/10 text-xs text-on-surface hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-primary text-base">query_stats</span>
+                Explain Var
+              </button>
+            </div>
           </div>
         )}
         {messages.map((msg) => (
@@ -64,9 +87,8 @@ export default function ChatSidebar({ sessionId }: ChatSidebarProps) {
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-gray-200">
-        <ChatInput onSend={sendMessage} />
-      </div>
+      {/* Input */}
+      <ChatInput onSend={sendMessage} />
     </div>
   );
 }
