@@ -20,6 +20,7 @@ class InvestigationResult:
     plot_cell_ids: list[str] = field(default_factory=list)
     confidence: float = 0.5
     sub_findings: list[dict] = field(default_factory=list)
+    images: dict[str, list[str]] = field(default_factory=dict)  # cell_id -> [base64 png]
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +46,8 @@ def run_subagent(
     execute_code: Callable[[str, str, int], tuple[list[dict], str | None]],
     cell_counter: list[int],  # mutable counter [current_count]
     max_cells: int = 5,
+    kernel_id: str | None = None,
+    notebook_id: str = "main",
 ) -> InvestigationResult:
     """
     Investigate a hypothesis by writing and executing notebook cells.
@@ -93,22 +96,26 @@ def run_subagent(
             "cell_type": cell_type,
             "source": code,
             "overwrite": replacement,
+            "notebook_id": notebook_id,
         })
         time.sleep(0.05)
 
         if cell_type == "markdown":
             return cell_id, [], None
 
-        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id})
-        outputs, error = execute_code(session_id, code, 60, cell_id=cell_id)
+        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id, "notebook_id": notebook_id})
+        exec_id = kernel_id if kernel_id else session_id
+        outputs, error = execute_code(exec_id, code, 60, cell_id=cell_id)
 
         if error:
             push_event(session_id, {
                 "type": "cell_error", "cell_id": cell_id, "error": error,
+                "notebook_id": notebook_id,
             })
         else:
             push_event(session_id, {
                 "type": "cell_output", "cell_id": cell_id, "outputs": outputs,
+                "notebook_id": notebook_id,
             })
             # Check if outputs contain plots
             for o in outputs:
@@ -116,6 +123,11 @@ def run_subagent(
                 if data.get("image/png") or data.get("application/vnd.plotly.v1+json"):
                     result.plot_cell_ids.append(cell_id)
                     break
+            # Extract images for vision analysis by main agent
+            for o in outputs:
+                img = o.get("data", {}).get("image/png")
+                if img:
+                    result.images.setdefault(cell_id, []).append(img)
 
         result.cell_ids.append(cell_id)
         time.sleep(0.05)
@@ -202,6 +214,7 @@ Respond with JSON (no markdown fencing):
         push_event(session_id, {
             "type": "thinking",
             "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
+            "notebook_id": notebook_id,
         })
         failed_cell_id, outputs, error = _write_and_execute(code)
         if not error:
