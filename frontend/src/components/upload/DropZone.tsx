@@ -104,9 +104,9 @@ export default function DropZone() {
                 onChange={(e) => setMaxLoops(Number(e.target.value))}
                 className="px-3 py-1.5 rounded border border-outline-variant bg-surface text-on-surface font-body"
               >
-                <option value={1}>Quick (1 loop)</option>
-                <option value={2}>Standard (2 loops)</option>
-                <option value={5}>Deep (up to 5 loops)</option>
+                <option value={1}>Quick</option>
+                <option value={2}>Standard</option>
+                <option value={5}>Deep</option>
               </select>
             </label>
           </div>
