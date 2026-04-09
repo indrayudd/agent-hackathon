@@ -791,6 +791,15 @@ def run_agent(
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
 
+        # Convergence check: stop if this loop produced no new high-confidence findings
+        new_high_confidence = sum(
+            1 for r in results
+            if r.confidence > 0.5
+        )
+        if loop_num > 1 and new_high_confidence == 0:
+            _think("No new significant findings this loop. Analysis converged.")
+            break
+
         # Cross-investigation reinforcement: if findings overlap on columns, reinforce both
         conclusion_nodes = kg.query_by_type("conclusion")
         for i, n1 in enumerate(conclusion_nodes):

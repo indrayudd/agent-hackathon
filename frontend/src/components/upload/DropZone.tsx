@@ -98,15 +98,15 @@ export default function DropZone() {
               </select>
             </label>
             <label className="flex flex-col gap-1 text-sm text-on-surface-variant font-body">
-              Max investigation loops
+              Reasoning depth
               <select
                 value={maxLoops}
                 onChange={(e) => setMaxLoops(Number(e.target.value))}
                 className="px-3 py-1.5 rounded border border-outline-variant bg-surface text-on-surface font-body"
               >
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
+                <option value={1}>Quick (1 loop)</option>
+                <option value={2}>Standard (2 loops)</option>
+                <option value={5}>Deep (up to 5 loops)</option>
               </select>
             </label>
           </div>

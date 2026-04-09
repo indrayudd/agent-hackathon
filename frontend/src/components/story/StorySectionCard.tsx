@@ -143,6 +143,25 @@ export default function StorySectionCard({
             {section.tags.join(" · ")}
           </p>
         )}
+
+        {/* Cell citations */}
+        {section.cell_ids && section.cell_ids.length > 0 && (
+          <div className="flex items-center gap-1.5 mt-3 pt-2 border-t border-outline-variant/20">
+            <span className="text-[10px] text-on-surface-variant font-medium uppercase tracking-wider">Sources:</span>
+            <div className="flex flex-wrap gap-1">
+              {section.cell_ids.slice(0, 5).map((cellId: string, idx: number) => (
+                <button
+                  key={cellId}
+                  onClick={() => onOpenCell?.(cellId)}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-primary/8 text-primary hover:bg-primary/15 font-mono transition-colors"
+                  title={`Open cell ${cellId}`}
+                >
+                  [{idx + 1}]
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {sectionPlots.length > 0 && (
