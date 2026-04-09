@@ -138,6 +138,8 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const setError = useStoryStore((s) => s.setError);
   const setActiveTab = useNotebookStore((s) => s.setActiveTab);
   const [regenerating, setRegenerating] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingMd, setExportingMd] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
@@ -226,6 +228,8 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   };
 
   const handleExport = async (format: "pdf" | "md") => {
+    if (format === "pdf") setExportingPdf(true);
+    else setExportingMd(true);
     try {
       const blob =
         format === "pdf"
@@ -242,6 +246,9 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
       window.setTimeout(() => URL.revokeObjectURL(url), 1500);
     } catch {
       // ignore export errors
+    } finally {
+      if (format === "pdf") setExportingPdf(false);
+      else setExportingMd(false);
     }
   };
 
@@ -364,17 +371,27 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
             </button>
             <button
               onClick={() => handleExport("pdf")}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-xs font-body text-on-primary transition-opacity hover:opacity-90"
+              disabled={exportingPdf}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-xs font-body text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              <span className="material-symbols-outlined text-sm">picture_as_pdf</span>
-              Export PDF
+              {exportingPdf ? (
+                <div className="h-3.5 w-3.5 rounded-full border-2 border-on-primary border-t-transparent animate-spin" />
+              ) : (
+                <span className="material-symbols-outlined text-sm">picture_as_pdf</span>
+              )}
+              {exportingPdf ? "Generating PDF..." : "Export PDF"}
             </button>
             <button
               onClick={() => handleExport("md")}
-              className="flex items-center gap-1.5 rounded-lg border border-outline-variant px-3 py-1 text-xs font-body text-on-surface-variant transition-colors hover:bg-surface-container"
+              disabled={exportingMd}
+              className="flex items-center gap-1.5 rounded-lg border border-outline-variant px-3 py-1 text-xs font-body text-on-surface-variant transition-colors hover:bg-surface-container disabled:opacity-50"
             >
-              <span className="material-symbols-outlined text-sm">share</span>
-              Export Markdown
+              {exportingMd ? (
+                <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              ) : (
+                <span className="material-symbols-outlined text-sm">share</span>
+              )}
+              {exportingMd ? "Generating..." : "Export Markdown"}
             </button>
           </div>
         </div>
