@@ -290,7 +290,7 @@ code, pre {
 .animate-output-pop { animation: output-pop 240ms ease-out; }
 
 .notebook-scroll {
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 
 @keyframes rise-in {

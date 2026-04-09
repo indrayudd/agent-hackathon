@@ -4,6 +4,13 @@ import { v4 as uuidv4 } from "uuid";
 
 export type AgentActivity = "idle" | "thinking" | "generating" | "executing" | "fixing" | "backtracking" | "complete";
 
+export interface NotebookData {
+  id: string;
+  title: string;
+  cells: Cell[];
+  status: "idle" | "running" | "complete" | "timeout";
+}
+
 export interface ActivityLogEntry {
   id: number;
   activity: AgentActivity;
@@ -50,6 +57,14 @@ interface NotebookState {
   resetForNewSession: () => void;
   activeTab: "notebook" | "story" | "history";
   setActiveTab: (tab: "notebook" | "story" | "history") => void;
+  notebooks: Record<string, NotebookData>;
+  activeNotebookId: string;
+  ensureNotebook: (id: string, title: string) => void;
+  setActiveNotebook: (id: string) => void;
+  setNotebookStatus: (id: string, status: NotebookData["status"]) => void;
+  appendCellToNotebook: (notebookId: string, cell: Cell, options?: { markFixed?: boolean }) => void;
+  clearNotebookCells: (id: string) => void;
+  getActiveNotebookCells: () => Cell[];
 }
 
 export const useNotebookStore = create<NotebookState>((set) => ({
@@ -257,7 +272,100 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       hypothesisGroups: [],
       fixedCellIds: new Set<string>(),
       activeTab: "notebook" as "notebook" | "story" | "history",
+      notebooks: { main: { id: "main", title: "Main", cells: [], status: "idle" as const } },
+      activeNotebookId: "main",
     }),
   activeTab: "notebook" as "notebook" | "story" | "history",
   setActiveTab: (activeTab) => set({ activeTab }),
+  notebooks: { main: { id: "main", title: "Main", cells: [], status: "idle" as const } },
+  activeNotebookId: "main",
+
+  ensureNotebook: (id, title) =>
+    set((s) => {
+      if (s.notebooks[id]) {
+        // Update title for recycled tabs
+        const existing = s.notebooks[id];
+        if (existing.title === title) return s;
+        return {
+          notebooks: {
+            ...s.notebooks,
+            [id]: { ...existing, title },
+          },
+        };
+      }
+      return {
+        notebooks: {
+          ...s.notebooks,
+          [id]: { id, title, cells: [], status: "idle" as const },
+        },
+      };
+    }),
+
+  setActiveNotebook: (id) => set({ activeNotebookId: id }),
+
+  setNotebookStatus: (id, status) =>
+    set((s) => {
+      const nb = s.notebooks[id];
+      if (!nb) return s;
+      return {
+        notebooks: {
+          ...s.notebooks,
+          [id]: { ...nb, status },
+        },
+      };
+    }),
+
+  appendCellToNotebook: (notebookId, cell, options) =>
+    set((s) => {
+      const nb = s.notebooks[notebookId] || s.notebooks["main"];
+      const targetId = s.notebooks[notebookId] ? notebookId : "main";
+      const existing = nb.cells.findIndex((c) => c.id === cell.id);
+      let newCells: Cell[];
+      if (existing >= 0) {
+        newCells = [...nb.cells];
+        // Only merge non-empty fields to avoid overwriting source with ""
+        const merged = { ...newCells[existing] };
+        for (const [k, v] of Object.entries(cell)) {
+          if (v !== "" && v !== undefined && v !== null) {
+            (merged as any)[k] = v;
+          }
+        }
+        // Always merge outputs and error even if "empty" (they represent real state)
+        if (cell.outputs !== undefined) merged.outputs = cell.outputs;
+        if (cell.error !== undefined) merged.error = cell.error;
+        if (cell.executing !== undefined) merged.executing = cell.executing;
+        newCells[existing] = merged;
+      } else {
+        newCells = [...nb.cells, cell];
+      }
+      const fixedCellIds = options?.markFixed
+        ? new Set([...s.fixedCellIds, cell.id])
+        : s.fixedCellIds;
+      return {
+        notebooks: {
+          ...s.notebooks,
+          [targetId]: { ...nb, cells: newCells },
+        },
+        fixedCellIds,
+      };
+    }),
+
+  clearNotebookCells: (id) =>
+    set((s) => {
+      const nb = s.notebooks[id];
+      if (!nb) return s;
+      return {
+        notebooks: {
+          ...s.notebooks,
+          [id]: { ...nb, cells: [], status: "idle" },
+        },
+      };
+    }),
+
+  getActiveNotebookCells: (): Cell[] => {
+    // NOTE: call useNotebookStore.getState() at invocation time, not init time
+    const s = (useNotebookStore as any).getState();
+    const nb = s.notebooks[s.activeNotebookId];
+    return nb ? nb.cells : [];
+  },
 }));

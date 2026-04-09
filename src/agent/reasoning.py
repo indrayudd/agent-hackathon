@@ -130,7 +130,7 @@ def interpret_output(output_text: str, phase: str, images: list[str] | None = No
 
         response = llm.invoke([
             SystemMessage(content="Write ONE concise sentence about the key finding from this output. If there are plots, describe what visual patterns you see (trends, clusters, outliers, distributions). Be specific with numbers. Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings."),
-            HumanMessage(content=f"Phase: {phase}\nOutput:\n{output_text[:1500]}"),
+            HumanMessage(content=content_parts),
         ])
         return response.content.strip()
     except Exception:

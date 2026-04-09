@@ -18,6 +18,13 @@ from src.reporting.plot_contract import (
     plot_specs_by_cell,
 )
 
+from pydantic import BaseModel
+
+class RunConfig(BaseModel):
+    max_subagents: int = 3
+    max_loops: int = 2
+    loop_timeout: int = 180
+
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
 
@@ -25,7 +32,8 @@ _LOG = logging.getLogger(__name__)
 _running: dict[str, threading.Thread] = {}
 
 
-def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path):
+def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path,
+                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 180):
     """Run the EDA agent loop in a background thread, streaming all events."""
     try:
         (session_dir / "status.json").write_text(
@@ -37,6 +45,9 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             session_id=session_id,
             dataset_path=dataset_path,
             push_event=push_event,
+            max_subagents=max_subagents,
+            max_loops=max_loops,
+            loop_timeout=loop_timeout,
         )
 
         # Save state summary
@@ -135,6 +146,29 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                             )
                         if plots:
                             section["plots"] = plots
+
+                        # Fallback for investigation plots: extract from KG metadata
+                        if not plots and section.get("type") == "investigation":
+                            try:
+                                kg_data = kg.to_dict() if kg else {}
+                                for nid_key, node_data in kg_data.get("nodes", {}).items():
+                                    if (node_data.get("type") == "conclusion" and
+                                        node_data.get("phase", "").replace("Investigation: ", "") == section.get("title", "")):
+                                        plot_images = node_data.get("metadata", {}).get("plot_images", [])
+                                        for pi in plot_images:
+                                            plots.append({
+                                                "kind": "image",
+                                                "mime_type": "image/png",
+                                                "source": pi["image_png"],
+                                                "title": section.get("title", ""),
+                                                "caption": f"Investigation plot for {section.get('title', '')}",
+                                                "source_cell_id": pi.get("cell_id", ""),
+                                            })
+                                        break
+                            except Exception as plot_exc:
+                                _LOG.warning("KG plot extraction failed: %s", plot_exc)
+                            if plots:
+                                section["plots"] = plots
                 except Exception as plot_exc:
                     _LOG.warning("Plot artifact bridge failed for session %s: %s", session_id, plot_exc)
 
@@ -202,6 +236,9 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                 "cell_phases": state.cell_phases,
             }
             set_session_state(session_id, chat_state)
+            if kg is not None:
+                from backend.routers.chat import set_session_kg
+                set_session_kg(session_id, kg)
             _LOG.info("Chat state set for session %s: %d findings, %d numeric cols",
                       session_id, len(state.findings), len(state.numeric_cols))
         except Exception as exc:
@@ -223,7 +260,7 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
 
 
 @router.post("/run/{session_id}", status_code=202)
-async def run_pipeline(session_id: str):
+async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
     """Kick off the real-time EDA agent in a background thread."""
     if session_id in _running and _running[session_id].is_alive():
         return JSONResponse(
@@ -246,6 +283,11 @@ async def run_pipeline(session_id: str):
     thread = threading.Thread(
         target=_run_agent_in_thread,
         args=(session_id, dataset_path, session_dir),
+        kwargs={
+            "max_subagents": config.max_subagents,
+            "max_loops": config.max_loops,
+            "loop_timeout": config.loop_timeout,
+        },
         daemon=True,
     )
     _running[session_id] = thread

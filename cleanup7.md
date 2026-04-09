@@ -1,39 +1,126 @@
-# cleanup7.md — Per-Hypothesis Notebooks + Parallel Execution + Dedup Fix
+# Cleanup 7: Multi-Notebook Orchestrator with Subagent Isolation
 
-## Problems
-1. Duplicate cell_id keys crash React (cell_29, cell_30 etc appear twice)
-2. All hypothesis investigations dump into one giant notebook — unnavigable
-3. Subagent cell counters collide with main agent counter
+## Problem Statement
 
-## Solution: Notebook-per-Hypothesis Architecture
+1. **Loop 2 never runs** — The LLM stop condition at the end of loop 1 returns "STOP" prematurely. For small datasets the LLM thinks 2 conclusions are "sufficient understanding."
 
-Each hypothesis investigation creates its OWN notebook (displayed as a sub-tab
-or expandable section in the Files sidebar). The main notebook contains only
-pass 1 (load, clean, plot, stats) + any chat-driven cells. Hypothesis notebooks
-are linked from the main notebook and the story.
+2. **No notebook isolation** — All cells (main EDA + all investigations) dump into one flat `cells[]` array. No visual separation between orchestrator work and each subagent's work.
 
-## Fixes
+3. **No "waiting for subagents" state** — The main agent should show it's waiting while subagents run, then compile results when they return — like Claude Code's subagent pattern.
 
-### 1. Deduplicate cells in notebookStore
-- [x] Update `frontend/src/stores/notebookStore.ts` `appendCell`:
-  reject cells with IDs that already exist in the array
+## Target Architecture
 
-### 2. Unique cell IDs per subagent
-- [x] Update `src/agent/subagent.py`: prefix cell IDs with hypothesis ID
-  e.g. `h3_cell_1` instead of `cell_29`
+```
+Main Orchestrator Notebook (always visible, "main" tab)
+  ├─ Initial EDA cells (load, dtypes, distributions, etc.)
+  ├─ "⏳ Dispatched 2 subagents for Loop 1..." [waiting state cell]
+  ├─ "✅ Subagent results compiled" [compilation summary cell]
+  ├─ Main agent follow-up analysis cells  
+  ├─ "⏳ Dispatched 2 subagents for Loop 2..." [waiting state cell]
+  ├─ "✅ Subagent results compiled" [compilation summary cell]
+  └─ Conclusions
 
-### 3. Separate notebooks per hypothesis
-- [x] Update `src/agent/eda_agent.py`: subagent cells go to a separate
-  stream channel (hypothesis-specific) so they don't pollute the main notebook
-- [x] Each hypothesis pushes a `notebook_create` event with a notebook ID
-- [x] Frontend: hypothesis notebooks shown as sub-items in Files sidebar
+Investigation: Wind vs Power  (separate tab, own cells)
+  ├─ Hypothesis description markdown
+  ├─ Analysis code cells (scatter, regression, etc.)
+  └─ Finding + confidence markdown
 
-### 4. Main notebook stays clean
-- [x] The main notebook only contains pass 1 goals + a "## Investigations"
-  section with links/summaries to each hypothesis notebook
-- [x] Chat-driven cells appear in the main notebook
+Investigation: Outlier Regimes  (separate tab, own cells)
+  ├─ Hypothesis description markdown
+  ├─ Analysis code cells
+  └─ Finding + confidence markdown
+```
 
-### 5. Frontend: Files sidebar shows hypothesis notebooks
-- [x] Each hypothesis notebook appears as a clickable item
-- [x] Clicking switches the NotebookPane to show that hypothesis's cells
-- [x] A "Main Notebook" item always exists at the top
+## Spec
+
+### Backend Changes
+
+#### 1. Remove LLM Stop Condition (eda_agent.py)
+Delete the "Should we investigate further?" LLM call at the end of each loop. Always run all M loops unless:
+- No novel hypotheses exist (already handles this with `if not hypotheses: break`)
+- All subagents failed (already handles with `if not results: break`)
+
+#### 2. Add notebook_id="main" to All Main Agent Events (eda_agent.py)
+Currently only subagent cells include `notebook_id`. Add `"notebook_id": "main"` to every `push_event` call in `_write_and_run()` and `_think()`.
+
+#### 3. Waiting + Compilation Cells in Main Notebook (eda_agent.py)
+Before dispatching subagents:
+```python
+_write_and_run(f"⏳ **Dispatched {len(hypotheses)} subagents** for Investigation Loop {loop_num}...\n\nWaiting for results.", "markdown")
+```
+
+After all subagents return, write a compilation summary:
+```python
+compilation = "## 📋 Loop {loop_num} Results\n\n"
+for result in results:
+    compilation += f"### {result.hypothesis_title}\n"
+    compilation += f"**Finding:** {result.finding}\n"
+    compilation += f"**Confidence:** {result.confidence:.0%}\n\n"
+_write_and_run(compilation, "markdown")
+```
+
+#### 4. New Events: subagents_dispatched / subagents_returned
+```python
+push_event(session_id, {
+    "type": "subagents_dispatched",
+    "loop_number": loop_num,
+    "count": len(hypotheses),
+    "hypothesis_ids": [h.id for h in hypotheses],
+})
+# ... after gather ...
+push_event(session_id, {
+    "type": "subagents_returned",
+    "loop_number": loop_num,
+    "results_count": len(results),
+})
+```
+
+#### 5. Save Per-Notebook .ipynb Files (run.py)
+After agent completes, save:
+- `notebook.ipynb` — main orchestrator cells only (notebook_id == "main" or no notebook_id)
+- `notebooks/investigation_{id}.ipynb` — per investigation
+
+### Frontend Changes
+
+#### 6. Multi-Notebook Store (notebookStore.ts)
+Replace `cells: Cell[]` with:
+```typescript
+notebooks: Record<string, { id: string; title: string; cells: Cell[]; status: "idle" | "running" | "complete" }>;
+activeNotebookId: string; // "main" by default
+```
+
+Keep backward compat by computing a flat `cells` getter from `notebooks["main"].cells`.
+
+Add methods:
+- `ensureNotebook(id, title)` — create notebook entry if not exists
+- `appendCellToNotebook(notebookId, cell)` — add cell to specific notebook
+- `setActiveNotebook(id)` — switch active tab
+- `setNotebookStatus(id, status)` — update running/complete
+
+#### 7. Event Routing (useAgentStream.ts)
+Route `cell_write`, `cell_output`, `cell_error`, `cell_executing` events to the notebook identified by `data.notebook_id || "main"`.
+
+Handle new events:
+- `subagent_start` → `ensureNotebook(notebook_id, title)` + `setNotebookStatus(notebook_id, "running")`
+- `subagent_complete` → `setNotebookStatus(notebook_id, "complete")`
+- `subagents_dispatched` → show waiting indicator on main notebook
+- `subagents_returned` → clear waiting indicator
+
+#### 8. Notebook Tabs UI (new NotebookTabs component)
+Tab bar between the toolbar and the cell list:
+```
+[📋 Main] [🔍 Wind vs Power ✅] [🔍 Outlier Regimes 🔄]
+```
+- Main tab always first, always present
+- Investigation tabs appear as subagents start
+- Badge: 🔄 running, ✅ complete, ⏱ timeout
+- Clicking a tab sets `activeNotebookId` and renders only that notebook's cells
+
+## Implementation Order
+
+1. Backend: Remove LLM stop condition + add notebook_id to main events + waiting/compilation cells + new event types
+2. Frontend: Multi-notebook store refactor  
+3. Frontend: Event routing by notebook_id
+4. Frontend: Notebook tabs UI
+5. Backend: Per-notebook .ipynb saving
+6. Integration test via Playwright

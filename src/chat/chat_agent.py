@@ -13,9 +13,10 @@ SESSIONS_DIR = pathlib.Path(__file__).resolve().parents[2] / "sessions"
 class ChatContext:
     """Holds session state for the chat agent."""
 
-    def __init__(self, session_id: str, state: dict | None = None):
+    def __init__(self, session_id: str, state: dict | None = None, kg=None):
         self.session_id = session_id
         self.state = state or {}
+        self.kg = kg
 
     def get_state_value(self, key: str) -> Any:
         return self.state.get(key)
@@ -41,14 +42,21 @@ class ChatContext:
             parts.append(f"Phases completed: {', '.join(phases)}")
 
         # Findings
-        findings = self.state.get("findings") or self.state.get("insights") or []
-        if findings:
-            parts.append("Key findings:")
-            for f in findings:
-                if isinstance(f, dict):
-                    parts.append(f"  - [{f.get('phase', '')}] {f.get('finding', f.get('description', ''))}")
-                else:
-                    parts.append(f"  - {f}")
+        if self.kg:
+            conclusions = self.kg.get_top_conclusions(5)
+            if conclusions:
+                parts.append("Key findings:")
+                for c in conclusions:
+                    parts.append(f"  - {c}")
+        else:
+            findings = self.state.get("findings") or self.state.get("insights") or []
+            if findings:
+                parts.append("Key findings:")
+                for f in findings:
+                    if isinstance(f, dict):
+                        parts.append(f"  - [{f.get('phase', '')}] {f.get('finding', f.get('description', ''))}")
+                    else:
+                        parts.append(f"  - {f}")
 
         # Decision summary
         ds = self.state.get("decision_summary", {})

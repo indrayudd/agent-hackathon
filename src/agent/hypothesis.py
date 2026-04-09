@@ -36,6 +36,7 @@ def generate_hypotheses(
     findings: list[dict],
     row_count: int,
     col_count: int,
+    kg_context: str = "",
 ) -> list[Hypothesis]:
     """
     Use the LLM to generate investigation hypotheses from initial EDA findings.
@@ -45,6 +46,10 @@ def generate_hypotheses(
     findings_text = "\n".join(
         f"- [{f.get('phase', '')}] {f.get('finding', '')}" for f in findings
     )
+
+    kg_section = ""
+    if kg_context:
+        kg_section = f"\n\nPrevious investigation results (do NOT re-investigate these):\n{kg_context}\n\nIMPORTANT: Generate NOVEL hypotheses that are NOT already covered above.\n"
 
     prompt = f"""You are an expert data analyst. Based on these initial EDA findings,
 generate up to 10 hypotheses worth investigating further.
@@ -57,7 +62,7 @@ Time column: {time_col or 'none'}
 
 Initial findings:
 {findings_text}
-
+{kg_section}
 For each hypothesis, consider:
 - Unexpected correlations that need deeper analysis
 - Anomalies/outliers that need explanation (are they clustered? regime-dependent?)

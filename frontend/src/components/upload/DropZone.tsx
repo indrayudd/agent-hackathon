@@ -26,6 +26,8 @@ export default function DropZone() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [maxSubagents, setMaxSubagents] = useState(3);
+  const [maxLoops, setMaxLoops] = useState(2);
 
   const onDrop = useCallback((accepted: File[]) => {
     setError(null);
@@ -44,7 +46,7 @@ export default function DropZone() {
     setError(null);
     try {
       const data = await uploadFile(file);
-      runEda(data.session_id).catch(() => {});
+      runEda(data.session_id, { max_subagents: maxSubagents, max_loops: maxLoops }).catch(() => {});
       router.push(`/session/${data.session_id}`);
     } catch (err: any) {
       setError(err.message ?? "Upload failed");
@@ -78,6 +80,38 @@ export default function DropZone() {
           </div>
         )}
       </div>
+
+      {file && (
+        <div className="w-full border border-outline-variant rounded-lg p-4 bg-surface-container-lowest">
+          <p className="text-sm font-medium text-on-surface mb-3 font-body">Agent Configuration</p>
+          <div className="flex gap-6">
+            <label className="flex flex-col gap-1 text-sm text-on-surface-variant font-body">
+              Subagents per loop
+              <select
+                value={maxSubagents}
+                onChange={(e) => setMaxSubagents(Number(e.target.value))}
+                className="px-3 py-1.5 rounded border border-outline-variant bg-surface text-on-surface font-body"
+              >
+                {[1, 2, 3, 4, 5, 6].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-on-surface-variant font-body">
+              Max investigation loops
+              <select
+                value={maxLoops}
+                onChange={(e) => setMaxLoops(Number(e.target.value))}
+                className="px-3 py-1.5 rounded border border-outline-variant bg-surface text-on-surface font-body"
+              >
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      )}
 
       {error && <p className="text-error text-sm font-body">{error}</p>}
 

@@ -20,6 +20,8 @@ class InvestigationResult:
     plot_cell_ids: list[str] = field(default_factory=list)
     confidence: float = 0.5
     sub_findings: list[dict] = field(default_factory=list)
+    images: dict[str, list[str]] = field(default_factory=dict)  # cell_id -> [base64 png]
+    relevant_cols: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +47,8 @@ def run_subagent(
     execute_code: Callable[[str, str, int], tuple[list[dict], str | None]],
     cell_counter: list[int],  # mutable counter [current_count]
     max_cells: int = 5,
+    kernel_id: str | None = None,
+    notebook_id: str = "main",
 ) -> InvestigationResult:
     """
     Investigate a hypothesis by writing and executing notebook cells.
@@ -66,6 +70,7 @@ def run_subagent(
         hypothesis_title=hypothesis_title,
         finding="",
     )
+    result.relevant_cols = relevant_cols
 
     col_list = ", ".join(f'"{c}"' for c in all_columns)
     relevant_str = ", ".join(f'"{c}"' for c in relevant_cols)
@@ -93,22 +98,26 @@ def run_subagent(
             "cell_type": cell_type,
             "source": code,
             "overwrite": replacement,
+            "notebook_id": notebook_id,
         })
         time.sleep(0.05)
 
         if cell_type == "markdown":
             return cell_id, [], None
 
-        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id})
-        outputs, error = execute_code(session_id, code, 60, cell_id=cell_id)
+        push_event(session_id, {"type": "cell_executing", "cell_id": cell_id, "notebook_id": notebook_id})
+        exec_id = kernel_id if kernel_id else session_id
+        outputs, error = execute_code(exec_id, code, 60, cell_id=cell_id)
 
         if error:
             push_event(session_id, {
                 "type": "cell_error", "cell_id": cell_id, "error": error,
+                "notebook_id": notebook_id,
             })
         else:
             push_event(session_id, {
                 "type": "cell_output", "cell_id": cell_id, "outputs": outputs,
+                "notebook_id": notebook_id,
             })
             # Check if outputs contain plots
             for o in outputs:
@@ -116,6 +125,11 @@ def run_subagent(
                 if data.get("image/png") or data.get("application/vnd.plotly.v1+json"):
                     result.plot_cell_ids.append(cell_id)
                     break
+            # Extract images for vision analysis by main agent
+            for o in outputs:
+                img = o.get("data", {}).get("image/png")
+                if img:
+                    result.images.setdefault(cell_id, []).append(img)
 
         result.cell_ids.append(cell_id)
         time.sleep(0.05)
@@ -151,13 +165,14 @@ Rules:
 - Write at most {max_cells} code cells (as a JSON array of code strings)
 - Each cell should be focused on ONE analysis step
 - Use ONLY columns from the available list
-- Include matplotlib plots where relevant (always plt.show())
+- MANDATORY: At least ONE cell MUST produce a matplotlib visualization (scatter, line, bar, histogram, boxplot, heatmap, etc.) that directly supports or refutes the hypothesis. Always call plt.show() after plotting.
 - When a cell makes a plot, also call emit_plot_spec(...) with a hidden
   structured payload that includes chart_family, semantic_intent, axis roles,
   and the data needed to redraw the figure in the report. Do not print it.
 - Print findings clearly with numbers
 - The cells should PROGRESSIVELY build toward answering the hypothesis
 - Include statistical tests where appropriate (scipy.stats, etc.)
+- A good investigation has: (1) data preparation, (2) visualization, (3) statistical test, (4) conclusion print
 
 Respond with JSON (no markdown fencing):
 {{"cells": ["code string 1", "code string 2", ...], "reasoning": "what each cell does"}}"""),
@@ -173,6 +188,30 @@ Respond with JSON (no markdown fencing):
 
         plan = json.loads(text)
         cells_code = plan.get("cells", [])[:max_cells]
+
+        # Ensure at least one cell produces a plot — inject if LLM skipped it
+        has_plot = any("plt.show()" in c or "plt.savefig" in c for c in cells_code)
+        if not has_plot and relevant_cols and len(cells_code) < max_cells:
+            col = relevant_cols[0]
+            if len(relevant_cols) >= 2:
+                col2 = relevant_cols[1]
+                plot_code = (
+                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
+                    f'ax.scatter(df["{col}"].dropna(), df["{col2}"].dropna(), alpha=0.5, s=20)\n'
+                    f'ax.set_xlabel("{col}")\n'
+                    f'ax.set_ylabel("{col2}")\n'
+                    f'ax.set_title("{hypothesis_title}")\n'
+                    f'plt.tight_layout()\nplt.show()'
+                )
+            else:
+                plot_code = (
+                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
+                    f'ax.hist(df["{col}"].dropna(), bins=30, edgecolor="black", alpha=0.7)\n'
+                    f'ax.set_xlabel("{col}")\n'
+                    f'ax.set_title("{hypothesis_title}")\n'
+                    f'plt.tight_layout()\nplt.show()'
+                )
+            cells_code.insert(-1 if cells_code else 0, plot_code)
 
     except Exception as exc:
         _LOG.warning("Subagent plan generation failed: %s", exc)
@@ -202,6 +241,7 @@ Respond with JSON (no markdown fencing):
         push_event(session_id, {
             "type": "thinking",
             "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
+            "notebook_id": notebook_id,
         })
         failed_cell_id, outputs, error = _write_and_execute(code)
         if not error:

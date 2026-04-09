@@ -170,22 +170,21 @@ export default function SessionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // Restore scroll position instantly when tab changes
   useEffect(() => {
-    let secondFrame: number | null = null;
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        const container = findScrollContainer(resolvedTab);
-        if (!container) return;
-        container.scrollTop = scrollPositionsRef.current[resolvedTab] ?? 0;
-      });
+    const saved = scrollPositionsRef.current[resolvedTab] ?? 0;
+    // Try immediately — container may already be in DOM
+    const container = findScrollContainer(resolvedTab);
+    if (container) {
+      container.scrollTop = saved;
+      return;
+    }
+    // Fallback: single rAF for cases where DOM hasn't painted yet
+    const frame = requestAnimationFrame(() => {
+      const el = findScrollContainer(resolvedTab);
+      if (el) el.scrollTop = saved;
     });
-
-    return () => {
-      window.cancelAnimationFrame(firstFrame);
-      if (secondFrame !== null) {
-        window.cancelAnimationFrame(secondFrame);
-      }
-    };
+    return () => cancelAnimationFrame(frame);
   }, [findScrollContainer, resolvedTab]);
 
   useAgentStream(sessionId);
@@ -434,8 +433,11 @@ export default function SessionPage() {
           }}
           className="flex-1 overflow-hidden flex flex-col"
         >
-          {resolvedTab === "notebook" && <NotebookPane />}
-          {resolvedTab === "story" && (
+          {/* Keep all tabs mounted — hide with CSS for instant switching */}
+          <div className={resolvedTab === "notebook" ? "flex flex-col flex-1 overflow-hidden" : "hidden"}>
+            <NotebookPane />
+          </div>
+          <div className={resolvedTab === "story" ? "flex flex-col flex-1 overflow-hidden" : "hidden"}>
             <StoryPane
               sessionId={sessionId}
               onOpenNotebookCell={(cellId) => {
@@ -443,8 +445,10 @@ export default function SessionPage() {
                 scrollToNotebookCell(cellId);
               }}
             />
-          )}
-          {resolvedTab === "history" && <HistoryPanel sessionId={sessionId} onClose={() => setActiveTab("notebook")} />}
+          </div>
+          <div className={resolvedTab === "history" ? "flex flex-col flex-1 overflow-hidden" : "hidden"}>
+            <HistoryPanel sessionId={sessionId} onClose={() => setActiveTab("notebook")} />
+          </div>
         </main>
 
         {/* ── Right Chat Sidebar ────────────────────────────── */}
