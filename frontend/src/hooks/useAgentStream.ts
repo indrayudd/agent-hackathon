@@ -18,6 +18,7 @@ type StreamEvent =
   | { type: "chat_action"; detail?: string; action?: string; cell_id?: string }
   | { type: "phase_transition"; phase?: string; notebook_id?: string }
   | { type: "backtrack"; reason?: string; cell_id?: string }
+  | { type: "chat_investigation_complete"; hypothesis_id?: string; finding?: string; confidence?: number }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -166,6 +167,13 @@ export function useAgentStream(sessionId: string) {
               cellId: data.cell_id,
               cellType: "code",
             });
+            break;
+
+          case "chat_investigation_complete":
+            store.setPipelineRunning(false);
+            store.setCurrentPhase("");
+            store.setLatestThinking("");
+            store.setAgentActivity("complete", `Investigation complete: ${data.finding || ""}`);
             break;
 
           case "complete":

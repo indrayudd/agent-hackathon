@@ -304,6 +304,13 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
         except Exception:
             pass
 
+        push_event(session_id, {
+            "type": "chat_investigation_complete",
+            "hypothesis_id": hyp.id,
+            "finding": result.finding,
+            "confidence": result.confidence,
+        })
+
         return {
             "role": "agent",
             "type": "text",
@@ -313,6 +320,12 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
 
     except Exception as exc:
         _LOG.warning("Hypothesis investigation failed: %s", exc)
+        push_event(session_id, {
+            "type": "chat_investigation_complete",
+            "hypothesis_id": getattr(hyp, 'id', 'unknown'),
+            "finding": f"Investigation failed: {exc}",
+            "confidence": 0.0,
+        })
         return {
             "role": "agent",
             "type": "text",
