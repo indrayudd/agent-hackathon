@@ -618,13 +618,24 @@ def run_agent(
         cell_counters.extend(loop_cell_counters)
         results: list[InvestigationResult] = []
 
+        # Clear agent tabs for this loop (recycle from previous loop)
+        for i in range(len(hypotheses)):
+            agent_nb_id = f"agent_{i + 1}"
+            push_event(session_id, {
+                "type": "notebook_clear",
+                "notebook_id": agent_nb_id,
+            })
+
         # Dispatch subagents in parallel — don't write hypothesis cells yet
         actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
         hypothesis_order = []  # Track original order for result writing
+        # ThreadPoolExecutor is correct here: subagent work is I/O-bound (kernel IPC + LLM API calls).
+        # The GIL is released during I/O, so threads run in true parallel.
+        # ProcessPoolExecutor won't work because push_event/execute_code callbacks aren't picklable.
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(actual_workers, 1)) as executor:
             futures = {}
             for i, (hyp, kid) in enumerate(zip(hypotheses, sub_kernel_ids)):
-                notebook_id = f"investigation_{hyp.id}"
+                notebook_id = f"agent_{i + 1}"
                 hypothesis_order.append((hyp, notebook_id))
 
                 push_event(session_id, {
@@ -634,9 +645,10 @@ def run_agent(
                     "title": hyp.title,
                 })
                 push_event(session_id, {
-                    "type": "phase_transition",
-                    "phase": f"Hypothesis {i+1}/{len(hypotheses)}: {hyp.title}",
-                    "message": hyp.description,
+                    "type": "cell_write",
+                    "cell_id": f"{notebook_id}_loop{loop_num}_header",
+                    "cell_type": "markdown",
+                    "source": f"## Loop {loop_num}: {hyp.title}\n\n> {hyp.description}",
                     "notebook_id": notebook_id,
                 })
 
