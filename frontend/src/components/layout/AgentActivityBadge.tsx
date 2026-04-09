@@ -62,6 +62,36 @@ function isRecoveryEntry(entry: ActivityLogEntry): boolean {
   return entry.activity === "fixing" || entry.activity === "backtracking";
 }
 
+function cleanDetail(text: string): string {
+  return text
+    .replace(/^---\s*/gm, "")
+    .replace(/^#{1,4}\s*/gm, "")
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/^>\s*/gm, "")
+    .trim();
+}
+
+function getEntryType(entry: ActivityLogEntry): { label: string; color: string; dotColor: string } {
+  const detail = entry.detail?.toLowerCase() || "";
+  if (detail.includes("hypothesis") || (entry.activity === "generating" && detail.includes("hypothesis"))) {
+    return { label: "Hypothesis", color: "text-primary", dotColor: "bg-primary" };
+  }
+  if (detail.includes("finding") || detail.includes("confirmed") || detail.includes("refuted")) {
+    return { label: "Finding", color: "text-primary", dotColor: "bg-primary" };
+  }
+  if (entry.activity === "complete") {
+    return { label: "Result", color: "text-green-700", dotColor: "bg-green-500" };
+  }
+  if (entry.activity === "thinking" || entry.activity === "executing") {
+    return { label: "Reasoning", color: "text-violet-600", dotColor: "bg-violet-400" };
+  }
+  if (entry.activity === "fixing" || entry.activity === "backtracking") {
+    return { label: "Recovery", color: "text-amber-600", dotColor: "bg-amber-400" };
+  }
+  return { label: "Action", color: "text-on-surface-variant", dotColor: "bg-on-surface-variant" };
+}
+
 function formatRelativePhase(phase: string): string {
   return phase ? phase.replace(/^Chat Investigation:\s*/i, "") : "";
 }
@@ -348,29 +378,48 @@ export default function AgentActivityBadge() {
       </div>
 
       {/* Timeline entries */}
-      <div className="divide-y divide-outline-variant/15">
+      <div className="relative pl-4">
+        {/* Vertical timeline line */}
+        <div className="absolute left-[7px] top-2 bottom-2 w-px bg-outline-variant/40" />
+
         {condensedEntries.map((entry) => {
-          const cfg = ACTIVITY_CONFIG[entry.activity];
-          const label = getActivityLabel(entry);
-          const detail = getActivityDetail(entry);
-          const glyph = entry.activity === "fixing" ? "build" : entry.activity === "backtracking" ? "replay" : entry.activity === "complete" ? "check_circle" : cfg.glyph || "code";
+          const { label, color, dotColor } = getEntryType(entry);
+          const detail = cleanDetail(entry.detail || "");
+          const title = detail.split("\n")[0].slice(0, 60);
+          const subtitle = detail.split("\n").slice(1).join(" ").slice(0, 80);
+
           return (
-            <button
-              key={entry.id}
-              type="button"
-              onClick={() => entry.cellId ? scrollToCell(entry.cellId) : setExpanded(true)}
-              className="flex w-full flex-col gap-1 py-3 text-left transition-colors hover:bg-surface-container-low/50"
-            >
-              <div className="flex items-center gap-2">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${cfg.dotColor}`} />
-                <span className="flex-1 truncate text-xs font-semibold text-on-surface">{label}</span>
-                <span className="shrink-0 text-[10px] tabular-nums text-on-surface-variant">{formatTime(entry.ts)}</span>
-              </div>
-              <div className="ml-4 flex items-start gap-1.5 text-[11px] leading-4 text-on-surface-variant">
-                <span className="material-symbols-outlined text-[13px] mt-0.5 shrink-0">{glyph}</span>
-                <span className="line-clamp-2">{detail}</span>
-              </div>
-            </button>
+            <div key={entry.id} className="relative pb-3 last:pb-0">
+              {/* Dot */}
+              <div className={`absolute -left-4 top-1 w-2 h-2 rounded-full ${dotColor}`} />
+
+              {/* Content */}
+              <button
+                type="button"
+                onClick={() => entry.cellId ? scrollToCell(entry.cellId) : setExpanded(true)}
+                className="w-full text-left"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium truncate">
+                      <span className={`${color} font-semibold`}>{label}:</span>{" "}
+                      <span className="text-on-surface">{title || entry.activity}</span>
+                    </p>
+                    {subtitle && (
+                      <p className="text-[10px] text-on-surface-variant truncate mt-0.5">
+                        {subtitle}
+                      </p>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-on-surface-variant shrink-0 tabular-nums">
+                    {formatTime(entry.ts)}
+                  </span>
+                </div>
+              </button>
+
+              {/* Separator */}
+              <div className="border-b border-outline-variant/20 mt-2" />
+            </div>
           );
         })}
       </div>
