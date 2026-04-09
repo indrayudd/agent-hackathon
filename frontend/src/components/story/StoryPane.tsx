@@ -143,7 +143,11 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const [retryCount, setRetryCount] = useState(0);
   const [changesDetected, setChangesDetected] = useState(false);
 
-  const cellCount = cells.length;
+  const notebooks = useNotebookStore((s) => s.notebooks);
+  // Count ALL cells across all notebooks (main + agents + chat investigations)
+  const totalCellCount = cells.length + Object.values(notebooks).reduce(
+    (sum, nb) => sum + (nb.id === "main" ? 0 : nb.cells.length), 0
+  );
   const storyGeneratedAt = generatedAt;
 
   // Detect changes: only flag when cells change AFTER pipeline completes and stabilizes
@@ -152,21 +156,21 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
 
   useEffect(() => {
     // Set baseline when pipeline finishes (not on story load — cells may still be streaming)
-    if (!pipelineRunning && storyGeneratedAt && !baselineSetRef.current && cellCount > 0) {
+    if (!pipelineRunning && storyGeneratedAt && !baselineSetRef.current && totalCellCount > 0) {
       // Delay baseline to let final events settle
       const timer = setTimeout(() => {
-        baselineCellCountRef.current = cellCount;
+        baselineCellCountRef.current = totalCellCount;
         baselineSetRef.current = true;
       }, 3000);
       return () => clearTimeout(timer);
     }
     // Only detect changes after baseline is set and pipeline is not running
     if (baselineSetRef.current && !pipelineRunning && baselineCellCountRef.current !== null) {
-      if (cellCount !== baselineCellCountRef.current) {
+      if (totalCellCount !== baselineCellCountRef.current) {
         setChangesDetected(true);
       }
     }
-  }, [cellCount, storyGeneratedAt, pipelineRunning]);
+  }, [totalCellCount, storyGeneratedAt, pipelineRunning]);
 
   useEffect(() => {
     if (!title && !loading && !pipelineRunning) {

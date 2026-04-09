@@ -360,6 +360,17 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             notebook_id=chat_notebook_id,
         )
 
+        # Write conclusion cell to the chat notebook
+        conf_pct = int(result.confidence * 100)
+        conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+        push_event(session_id, {
+            "type": "cell_write",
+            "cell_id": f"{chat_notebook_id}_conclusion",
+            "cell_type": "markdown",
+            "source": f"### Conclusion\n\n{result.finding}\n\n**Confidence:** {conf_label} ({conf_pct}%)",
+            "notebook_id": chat_notebook_id,
+        })
+
         # Update story with new investigation
         try:
             session_dir = get_session_dir(session_id)
