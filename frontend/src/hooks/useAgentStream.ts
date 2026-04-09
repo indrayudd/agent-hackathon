@@ -26,6 +26,7 @@ type StreamEvent =
   | { type: "subagents_returned"; notebook_id?: string; loop_number?: number; results_count?: number }
   | { type: "loop_start"; loop_number?: number; total_loops?: number }
   | { type: "loop_complete"; loop_number?: number }
+  | { type: "notebook_clear"; notebook_id?: string }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -211,6 +212,12 @@ export function useAgentStream(sessionId: string) {
             store.setCurrentPhase("");
             store.setLatestThinking("");
             store.setAgentActivity("complete", `Investigation complete: ${data.finding || ""}`);
+            break;
+
+          case "notebook_clear":
+            if (data.notebook_id) {
+              store.clearNotebookCells(data.notebook_id);
+            }
             break;
 
           case "subagent_start":

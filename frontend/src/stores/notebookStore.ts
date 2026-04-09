@@ -63,6 +63,7 @@ interface NotebookState {
   setActiveNotebook: (id: string) => void;
   setNotebookStatus: (id: string, status: NotebookData["status"]) => void;
   appendCellToNotebook: (notebookId: string, cell: Cell, options?: { markFixed?: boolean }) => void;
+  clearNotebookCells: (id: string) => void;
   getActiveNotebookCells: () => Cell[];
 }
 
@@ -281,7 +282,17 @@ export const useNotebookStore = create<NotebookState>((set) => ({
 
   ensureNotebook: (id, title) =>
     set((s) => {
-      if (s.notebooks[id]) return s;
+      if (s.notebooks[id]) {
+        // Update title for recycled tabs
+        const existing = s.notebooks[id];
+        if (existing.title === title) return s;
+        return {
+          notebooks: {
+            ...s.notebooks,
+            [id]: { ...existing, title },
+          },
+        };
+      }
       return {
         notebooks: {
           ...s.notebooks,
@@ -336,6 +347,18 @@ export const useNotebookStore = create<NotebookState>((set) => ({
           [targetId]: { ...nb, cells: newCells },
         },
         fixedCellIds,
+      };
+    }),
+
+  clearNotebookCells: (id) =>
+    set((s) => {
+      const nb = s.notebooks[id];
+      if (!nb) return s;
+      return {
+        notebooks: {
+          ...s.notebooks,
+          [id]: { ...nb, cells: [], status: "idle" },
+        },
       };
     }),
 

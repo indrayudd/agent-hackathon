@@ -28,9 +28,22 @@ export default function NotebookTabs() {
             <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>
               {isMain ? "description" : "science"}
             </span>
-            <span className="max-w-[180px] truncate">
-              {isMain ? "Main" : nb.title}
-            </span>
+            {(() => {
+              const agentMatch = nb.id.match(/^agent_(\d+)$/);
+              const label = nb.id === "main" ? "Main" : agentMatch ? `Agent ${agentMatch[1]}` : nb.title;
+              return (
+                <>
+                  <span className="max-w-[180px] truncate">
+                    {label}
+                  </span>
+                  {agentMatch && nb.title && (
+                    <span className="max-w-[120px] truncate text-[10px] text-on-surface-variant opacity-70">
+                      {nb.title}
+                    </span>
+                  )}
+                </>
+              );
+            })()}
             {!isMain && nb.status !== "idle" && (
               <span
                 className="material-symbols-outlined"
