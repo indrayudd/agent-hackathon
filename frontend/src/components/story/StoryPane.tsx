@@ -146,10 +146,17 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const cellCount = cells.length;
   const storyGeneratedAt = generatedAt;
 
-  // Detect changes: if cells were added/removed after story was generated
-  const prevCellCountRef = useRef(cellCount);
+  // Detect changes: only flag when cells change AFTER story has loaded and stabilized
+  const prevCellCountRef = useRef<number | null>(null);
+  const storyLoadedRef = useRef(false);
   useEffect(() => {
-    if (storyGeneratedAt && cellCount !== prevCellCountRef.current) {
+    if (storyGeneratedAt && !storyLoadedRef.current) {
+      // Story just loaded — snapshot current cell count as baseline, don't flag
+      storyLoadedRef.current = true;
+      prevCellCountRef.current = cellCount;
+      return;
+    }
+    if (storyLoadedRef.current && prevCellCountRef.current !== null && cellCount !== prevCellCountRef.current) {
       setChangesDetected(true);
     }
     prevCellCountRef.current = cellCount;
@@ -370,16 +377,16 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
             <span>Story report</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="relative">
+            <div className="relative group">
               <button
                 onClick={handleRegenerate}
                 disabled={regenerating}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-body transition-colors disabled:opacity-50 ${
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-body transition-all disabled:opacity-50 ${
                   changesDetected
-                    ? "bg-green-50 text-green-700 border border-green-300 hover:bg-green-100"
+                    ? "bg-green-50 text-green-700 border border-green-300 hover:bg-green-100 shadow-[0_0_8px_rgba(34,197,94,0.3)]"
                     : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
                 }`}
-                title="Regenerate story from current notebook"
+                title={changesDetected ? "Notebook cells changed — regenerate to update story" : "Regenerate story from current notebook"}
               >
                 {regenerating ? (
                   <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
@@ -389,7 +396,7 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
                 {regenerating ? "Regenerating..." : "Regenerate"}
               </button>
               {changesDetected && !regenerating && (
-                <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] text-green-600 font-medium whitespace-nowrap">
+                <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-green-600 font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                   Changes detected!
                 </span>
               )}
