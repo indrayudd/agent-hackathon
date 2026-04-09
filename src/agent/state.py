@@ -37,6 +37,10 @@ class AgentState:
     cell_phases: dict[str, str] = field(default_factory=dict)  # cell_id -> phase
     cell_registry: list[dict] = field(default_factory=list)  # ordered cell records
     knowledge_graph: object = None  # KnowledgeGraph instance, set after investigation
+    loop_count: int = 0
+    subagent_run_count: int = 0
+    max_subagents: int = 3
+    max_loops: int = 2
 
     def add_finding(self, phase: str, finding: str):
         self.findings.append({"phase": phase, "finding": finding})

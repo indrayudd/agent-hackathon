@@ -18,6 +18,13 @@ from src.reporting.plot_contract import (
     plot_specs_by_cell,
 )
 
+from pydantic import BaseModel
+
+class RunConfig(BaseModel):
+    max_subagents: int = 3
+    max_loops: int = 2
+    loop_timeout: int = 180
+
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
 
@@ -25,7 +32,8 @@ _LOG = logging.getLogger(__name__)
 _running: dict[str, threading.Thread] = {}
 
 
-def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path):
+def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path,
+                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 180):
     """Run the EDA agent loop in a background thread, streaming all events."""
     try:
         (session_dir / "status.json").write_text(
@@ -37,6 +45,9 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             session_id=session_id,
             dataset_path=dataset_path,
             push_event=push_event,
+            max_subagents=max_subagents,
+            max_loops=max_loops,
+            loop_timeout=loop_timeout,
         )
 
         # Save state summary
@@ -226,7 +237,7 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
 
 
 @router.post("/run/{session_id}", status_code=202)
-async def run_pipeline(session_id: str):
+async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
     """Kick off the real-time EDA agent in a background thread."""
     if session_id in _running and _running[session_id].is_alive():
         return JSONResponse(
@@ -249,6 +260,11 @@ async def run_pipeline(session_id: str):
     thread = threading.Thread(
         target=_run_agent_in_thread,
         args=(session_id, dataset_path, session_dir),
+        kwargs={
+            "max_subagents": config.max_subagents,
+            "max_loops": config.max_loops,
+            "loop_timeout": config.loop_timeout,
+        },
         daemon=True,
     )
     _running[session_id] = thread

@@ -19,6 +19,9 @@ def run_agent(
     session_id: str,
     dataset_path: str,
     push_event: Callable[[str, dict], None],
+    max_subagents: int = 3,
+    max_loops: int = 2,
+    loop_timeout: int = 180,
 ):
     """
     Run the EDA agent loop.
@@ -456,20 +459,34 @@ def run_agent(
             _think(f"Error in {goal.name}: {exc}. Moving to next step...")
             state.add_error(goal.phase, str(exc), "skipped")
 
-    # ---- Investigation Phase: Hypothesis-Driven Deep Dives ----
+    # ---- Investigation Phase: Multi-Loop Hypothesis-Driven Deep Dives ----
     from src.agent.hypothesis import generate_hypotheses
-    from src.agent.subagent import run_subagent
-    from src.agent.knowledge_graph import KnowledgeGraph
+    from src.agent.subagent import run_subagent, InvestigationResult
+    from src.agent.knowledge_graph import KnowledgeGraph, KGEdge
+    from backend.services.kernel_pool import KernelPoolManager
 
     kg = KnowledgeGraph()
+    pool = KernelPoolManager()
 
     # Populate knowledge graph with pass 1 findings
     for f in state.findings:
         kg.add_fact(f.get("finding", ""), f.get("phase", ""), f.get("cell_id"))
 
-    # Generate hypotheses from what we've learned
+    # Save dataset checkpoint for subagent kernels
+    try:
+        _write_and_run(
+            "import os; os.makedirs('.cache', exist_ok=True)\n"
+            "df.to_parquet('.cache/df_clean.parquet', index=True)\n"
+            "print('Dataset checkpoint saved')"
+        )
+    except Exception as exc:
+        _LOG.warning("Dataset checkpoint failed: %s", exc)
+
+    # Get session dir for subagent preamble
+    from backend.services.session_manager import get_session_dir
+    session_dir = str(get_session_dir(session_id) / "uploads")
+
     _transition("Investigation Phase", "Generating hypotheses from initial findings...", render_cell=False)
-    # Write a prominent divider between pass-1 EDA and investigations
     findings_summary = "\n".join(f"- {f.get('finding', '')}" for f in state.findings if f.get('finding'))
     _write_and_run(
         "---\n\n"
@@ -481,101 +498,233 @@ def run_agent(
         "markdown",
     )
 
-    try:
-        hypotheses = generate_hypotheses(
-            columns=state.columns,
-            numeric_cols=state.numeric_cols,
-            time_col=state.time_col,
-            findings=state.findings,
-            row_count=state.row_count,
-            col_count=state.col_count,
-        )
-        hypotheses = hypotheses[:3]  # Execute up to three bounded deep dives
-    except Exception as exc:
-        _LOG.warning("Hypothesis generation failed: %s", exc)
-        hypotheses = []
+    cell_counters = []  # Track for final cell_count update
 
-    if hypotheses:
-        _think(f"Generated {len(hypotheses)} hypotheses to investigate.")
+    for loop_num in range(1, max_loops + 1):
+        state.loop_count = loop_num
+
         push_event(session_id, {
-            "type": "phase_transition",
-            "phase": f"Investigating {len(hypotheses)} hypotheses",
+            "type": "loop_start",
+            "loop_number": loop_num,
+            "total_loops": max_loops,
         })
 
-        cell_counter = [1000]  # subagents start at 1000 to avoid main agent collision
+        _transition(
+            f"Investigation Loop {loop_num}/{max_loops}",
+            f"Generating hypotheses for loop {loop_num}...",
+            render_cell=False,
+        )
 
-        for i, hyp in enumerate(hypotheses):
-            _transition(
-                f"Hypothesis {i+1}/{len(hypotheses)}: {hyp.title}",
-                hyp.description,
-                render_cell=False,
+        # Generate hypotheses using KG context
+        try:
+            kg_context = kg.get_context_for_hypothesis_generation()
+            hypotheses = generate_hypotheses(
+                columns=state.columns,
+                numeric_cols=state.numeric_cols,
+                time_col=state.time_col,
+                findings=state.findings,
+                row_count=state.row_count,
+                col_count=state.col_count,
+                kg_context=kg_context,
             )
-            # Prominent hypothesis header with context
-            cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
-            _write_and_run(
-                f"---\n\n"
-                f"## Hypothesis {i+1}: {hyp.title}\n\n"
-                f"> {hyp.description}\n\n"
-                f"**Relevant columns:** {cols_str}",
-                "markdown",
-            )
 
-            push_event(session_id, {
-                "type": "phase_transition",
-                "phase": f"Hypothesis {i+1}/{len(hypotheses)}: {hyp.title}",
-                "message": hyp.description,
-                "notebook_id": hyp.id,
-            })
+            # Deduplicate against KG
+            novel = []
+            for hyp in hypotheses:
+                existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
+                if existing and existing.confidence > 0.6:
+                    _think(f"Skipping '{hyp.title}' - already investigated (confidence: {existing.confidence:.0%})")
+                    continue
+                novel.append(hyp)
+                if len(novel) >= max_subagents:
+                    break
 
-            try:
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(
-                        run_subagent,
-                        hypothesis_id=hyp.id,
-                        hypothesis_title=hyp.title,
-                        hypothesis_description=hyp.description,
-                        relevant_cols=hyp.relevant_cols,
-                        all_columns=state.columns,
-                        time_col=state.time_col,
-                        session_id=session_id,
-                        push_event=push_event,
-                        execute_code=execute_code,
-                        cell_counter=cell_counter,
-                        max_cells=4,
-                    )
-                    result = future.result(timeout=120)  # 2 min max per hypothesis
+            hypotheses = novel
+        except Exception as exc:
+            _LOG.warning("Hypothesis generation failed in loop %d: %s", loop_num, exc)
+            hypotheses = []
 
-                kg.add_investigation(
-                    hypothesis_id=hyp.id,
-                    hypothesis_title=hyp.title,
-                    finding=result.finding,
-                    evidence_cells=result.cell_ids,
-                    plot_cells=result.plot_cell_ids,
-                    confidence=result.confidence,
-                    sub_findings=result.sub_findings,
-                )
+        if not hypotheses:
+            _think("No novel hypotheses remain. Moving to report generation.")
+            push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
+            break
 
-                state.add_finding(f"Investigation: {hyp.title}", result.finding)
+        _think(f"Loop {loop_num}: investigating {len(hypotheses)} hypotheses in parallel.")
 
-                # Write investigation conclusion as markdown
-                conf_pct = int(result.confidence * 100)
-                conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+        _write_and_run(
+            f"---\n\n## Investigation Loop {loop_num}\n\n"
+            f"Testing {len(hypotheses)} hypothesis(es).",
+            "markdown",
+        )
+
+        # Allocate subagent kernels for parallel execution
+        sub_kernel_ids = [None] * len(hypotheses)
+        try:
+            sub_kernel_ids = pool.allocate_subagent_kernels(session_id, len(hypotheses))
+            for kid in sub_kernel_ids:
+                try:
+                    pool.inject_dataset_preamble(kid, session_dir)
+                except Exception:
+                    _LOG.warning("Preamble injection failed for %s", kid)
+        except Exception as exc:
+            _LOG.warning("Kernel allocation failed: %s - falling back to sequential", exc)
+            sub_kernel_ids = [None] * len(hypotheses)
+
+        # Run subagents via ThreadPoolExecutor
+        import concurrent.futures
+        loop_cell_counters = [[1000 + loop_num * 1000 + i * 100] for i in range(len(hypotheses))]
+        cell_counters.extend(loop_cell_counters)
+        results: list[InvestigationResult] = []
+
+        actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(actual_workers, 1)) as executor:
+            futures = {}
+            for i, (hyp, kid) in enumerate(zip(hypotheses, sub_kernel_ids)):
+                notebook_id = f"investigation_{hyp.id}"
+
+                cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
                 _write_and_run(
-                    f"### Finding\n\n"
-                    f"{result.finding}\n\n"
-                    f"**Confidence:** {conf_label} ({conf_pct}%)",
+                    f"---\n\n### Hypothesis {i+1}: {hyp.title}\n\n"
+                    f"> {hyp.description}\n\n"
+                    f"**Relevant columns:** {cols_str}",
                     "markdown",
                 )
 
-            except concurrent.futures.TimeoutError:
-                _LOG.warning("Subagent for %s timed out after 120s", hyp.id)
-                _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
-            except Exception as exc:
-                _LOG.warning("Subagent for %s failed: %s", hyp.id, exc)
-                _think(f"Investigation of '{hyp.title}' encountered an error. Moving on.")
+                push_event(session_id, {
+                    "type": "subagent_start",
+                    "hypothesis_id": hyp.id,
+                    "notebook_id": notebook_id,
+                    "title": hyp.title,
+                })
+                push_event(session_id, {
+                    "type": "phase_transition",
+                    "phase": f"Hypothesis {i+1}/{len(hypotheses)}: {hyp.title}",
+                    "message": hyp.description,
+                    "notebook_id": notebook_id,
+                })
 
-        state.cell_count = cell_counter[0]
+                future = executor.submit(
+                    run_subagent,
+                    hypothesis_id=hyp.id,
+                    hypothesis_title=hyp.title,
+                    hypothesis_description=hyp.description,
+                    relevant_cols=hyp.relevant_cols,
+                    all_columns=state.columns,
+                    time_col=state.time_col,
+                    session_id=session_id,
+                    push_event=push_event,
+                    execute_code=execute_code,
+                    cell_counter=loop_cell_counters[i],
+                    max_cells=4,
+                    kernel_id=kid,
+                    notebook_id=notebook_id,
+                )
+                futures[future] = (hyp, notebook_id)
+
+            for future in concurrent.futures.as_completed(futures, timeout=loop_timeout):
+                hyp, notebook_id = futures[future]
+                try:
+                    result = future.result(timeout=10)
+                    results.append(result)
+                    state.subagent_run_count += 1
+
+                    push_event(session_id, {
+                        "type": "subagent_complete",
+                        "hypothesis_id": hyp.id,
+                        "notebook_id": notebook_id,
+                        "finding": result.finding,
+                        "confidence": result.confidence,
+                    })
+                except concurrent.futures.TimeoutError:
+                    _LOG.warning("Subagent for %s timed out", hyp.id)
+                    push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id})
+                    _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+                except Exception as exc:
+                    _LOG.warning("Subagent for %s failed: %s", hyp.id, exc)
+                    _think(f"Investigation of '{hyp.title}' failed. Moving on.")
+
+        # Shutdown subagent kernels after this loop
+        try:
+            pool.shutdown_subagent_kernels(session_id)
+        except Exception:
+            pass
+
+        # Ingest results into KG
+        for result in results:
+            inv_metadata = {
+                "columns": getattr(result, 'relevant_cols', []) or [],
+                "analysis_type": "hypothesis_investigation",
+            }
+            nid = kg.add_investigation(
+                hypothesis_id=result.hypothesis_id,
+                hypothesis_title=result.hypothesis_title,
+                finding=result.finding,
+                evidence_cells=result.cell_ids,
+                plot_cells=result.plot_cell_ids,
+                confidence=result.confidence,
+                sub_findings=result.sub_findings,
+                metadata=inv_metadata,
+                loop_number=loop_num,
+            )
+            state.add_finding(f"Investigation: {result.hypothesis_title}", result.finding)
+
+            # Vision analysis of subagent plots
+            for cell_id, images in getattr(result, 'images', {}).items():
+                if images:
+                    try:
+                        visual_finding = interpret_output(
+                            f"Plot from hypothesis: {result.hypothesis_title}",
+                            f"Investigation: {result.hypothesis_title}",
+                            images=images[:2],
+                        )
+                        if visual_finding:
+                            vis_id = kg.add_fact(
+                                visual_finding,
+                                f"Visual: {result.hypothesis_title}",
+                                metadata={"type": "visual_insight"},
+                            )
+                            kg.nodes[vis_id].type = "visual_insight"
+                            kg.add_edge(KGEdge(source_id=vis_id, target_id=nid, type="supports"))
+                    except Exception:
+                        pass
+
+            # Write finding as markdown
+            conf_pct = int(result.confidence * 100)
+            conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+            _write_and_run(
+                f"### Finding: {result.hypothesis_title}\n\n"
+                f"{result.finding}\n\n"
+                f"**Confidence:** {conf_label} ({conf_pct}%)",
+                "markdown",
+            )
+
+        push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
+
+        # Stop condition: ask LLM if we should continue (skip on last loop)
+        if loop_num < max_loops and results:
+            try:
+                from src.config.config import get_chat_model
+                from langchain_core.messages import SystemMessage, HumanMessage
+                llm_stop = get_chat_model()
+                context = kg.get_context_for_hypothesis_generation()
+                conclusions = kg.get_top_conclusions(10)
+                stop_prompt = (
+                    f"Based on the current knowledge about this dataset:\n\n{context}\n\n"
+                    f"Top conclusions:\n" +
+                    "\n".join(f"- {c}" for c in conclusions) +
+                    "\n\nShould we investigate further or do we have sufficient understanding? "
+                    "Reply CONTINUE or STOP with a one-sentence reason."
+                )
+                resp = llm_stop.invoke([HumanMessage(content=stop_prompt)])
+                if "STOP" in resp.content.upper():
+                    _think(f"Agent decided to stop: {resp.content.strip()}")
+                    break
+            except Exception:
+                pass
+
+    # Update cell count from all subagent counters
+    if cell_counters:
+        state.cell_count = max(state.cell_count, *(cc[0] for cc in cell_counters))
 
     # Write conclusions
     _transition("Conclusions", "Synthesizing all findings...", render_cell=False)
