@@ -7,7 +7,76 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import math
+
 _LOG = logging.getLogger(__name__)
+
+
+def compute_finding_confidence(
+    has_p_value: bool = False,
+    p_value: float | None = None,
+    sample_size: int = 0,
+    num_evidence_lines: int = 1,
+    has_visual_confirmation: bool = False,
+    confirmed_by_multiple_methods: bool = False,
+) -> float:
+    """Composite confidence score based on statistical evidence quality."""
+    score = 0.0
+
+    # Statistical test strength (0-0.35)
+    if has_p_value and p_value is not None:
+        if p_value < 0.001:
+            score += 0.35
+        elif p_value < 0.01:
+            score += 0.30
+        elif p_value < 0.05:
+            score += 0.25
+        elif p_value < 0.10:
+            score += 0.15
+        else:
+            score += 0.05
+    else:
+        score += 0.10  # heuristic/descriptive only
+
+    # Sample size adequacy (0-0.25)
+    if sample_size >= 1000:
+        score += 0.25
+    elif sample_size >= 100:
+        score += 0.20
+    elif sample_size >= 30:
+        score += 0.15
+    elif sample_size >= 10:
+        score += 0.08
+    else:
+        score += 0.03
+
+    # Evidence convergence (0-0.20) — diminishing returns
+    score += 0.20 * (1 - math.exp(-0.5 * num_evidence_lines))
+
+    # Visual confirmation (0-0.10)
+    if has_visual_confirmation:
+        score += 0.10
+
+    # Multi-method confirmation (0-0.10)
+    if confirmed_by_multiple_methods:
+        score += 0.10
+
+    return round(min(1.0, score), 3)
+
+
+def extract_p_values(text: str) -> list[float]:
+    """Extract p-values from statistical output text."""
+    import re
+    p_vals = []
+    # Match patterns like p=0.05, p<0.001, p-value: 0.023, (p=1.04e-19)
+    for match in re.finditer(r'p[\s_-]*(?:value)?[\s:=<]*([0-9]+\.?[0-9]*(?:e[+-]?\d+)?)', text, re.IGNORECASE):
+        try:
+            val = float(match.group(1))
+            if 0 <= val <= 1:
+                p_vals.append(val)
+        except ValueError:
+            pass
+    return p_vals
 
 
 @dataclass
