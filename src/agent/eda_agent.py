@@ -47,7 +47,7 @@ def run_agent(
 
     def _think(content: str):
         push_event(session_id, {"type": "thinking", "content": content})
-        time.sleep(0.1)
+        time.sleep(0.02)
 
     def _write_and_run(
         code: str,
@@ -71,7 +71,7 @@ def run_agent(
             "source": code,
             "overwrite": replacement,
         })
-        time.sleep(0.1)
+        time.sleep(0.02)
 
         if cell_type == "markdown":
             state.register_cell(target_cell_id, "markdown", code)
@@ -117,7 +117,7 @@ def run_agent(
 
     def _backtrack_and_fix(error: str, fix_code: str, reason: str, failed_cell_id: str):
         push_event(session_id, {"type": "backtrack", "reason": reason, "cell_id": failed_cell_id})
-        time.sleep(0.2)
+        time.sleep(0.02)
         return _write_and_run(fix_code, cell_id=failed_cell_id, overwrite=True)
 
     def _extract_output_text(outputs: list[dict]) -> str:
