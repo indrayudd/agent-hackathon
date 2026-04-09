@@ -184,9 +184,13 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                     f"- [{f.get('phase', '')}] {f.get('finding', '')}" for f in state.findings
                 )
 
+                kg_context = ""
+                if kg is not None:
+                    kg_context = kg.get_context_for_hypothesis_generation()
+
                 resp = llm.invoke([
                     SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points."),
-                    HumanMessage(content=f"Dataset: {os.path.basename(dataset_path)}\n{state.row_count} rows x {state.col_count} cols\nColumns: {', '.join(state.columns[:15])}\nTime column: {state.time_col}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
+                    HumanMessage(content=f"Dataset: {os.path.basename(dataset_path)}\n{state.row_count} rows x {state.col_count} cols\nColumns: {', '.join(state.columns[:15])}\nTime column: {state.time_col}\n\nKnowledge graph context:\n{kg_context[:2000]}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
                 ])
                 narrative = resp.content.strip()
             except Exception as llm_exc:

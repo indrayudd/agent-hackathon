@@ -798,6 +798,18 @@ def run_agent(
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
 
+        # Cross-investigation reinforcement: if findings overlap on columns, reinforce both
+        conclusion_nodes = kg.query_by_type("conclusion")
+        for i, n1 in enumerate(conclusion_nodes):
+            n1_cols = set(c.lower() for c in n1.metadata.get("columns", []))
+            if not n1_cols:
+                continue
+            for n2 in conclusion_nodes[i+1:]:
+                n2_cols = set(c.lower() for c in n2.metadata.get("columns", []))
+                if n1_cols & n2_cols:  # Shared columns
+                    kg.reinforce(n1.id)
+                    kg.reinforce(n2.id)
+
     # Update cell count from all subagent counters
     if cell_counters:
         state.cell_count = max(state.cell_count, *(cc[0] for cc in cell_counters))

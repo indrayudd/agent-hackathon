@@ -33,7 +33,21 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     """Accept a WebSocket connection and relay messages through the chat agent."""
     await websocket.accept()
     state = _session_states.get(session_id, {})
-    agent = build_chat_agent(session_id, state)
+    # Load KG for chat context
+    kg = _session_kgs.get(session_id)
+    if kg is None:
+        try:
+            from backend.services.session_manager import get_session_dir
+            from src.agent.knowledge_graph import KnowledgeGraph
+            story_path = get_session_dir(session_id) / "story.json"
+            if story_path.exists():
+                story_data = json.loads(story_path.read_text())
+                if "knowledge_graph" in story_data:
+                    kg = KnowledgeGraph.from_dict(story_data["knowledge_graph"])
+                    _session_kgs[session_id] = kg
+        except Exception:
+            pass
+    agent = build_chat_agent(session_id, state, kg=kg)
 
     try:
         while True:
@@ -74,8 +88,23 @@ async def chat_message(session_id: str, req: ChatRequest):
     except Exception as exc:
         _LOG.warning("Hypothesis detection failed: %s", exc)
 
+    # Load KG for chat context
+    kg = _session_kgs.get(session_id)
+    if kg is None:
+        try:
+            from backend.services.session_manager import get_session_dir
+            from src.agent.knowledge_graph import KnowledgeGraph
+            story_path = get_session_dir(session_id) / "story.json"
+            if story_path.exists():
+                story_data = json.loads(story_path.read_text())
+                if "knowledge_graph" in story_data:
+                    kg = KnowledgeGraph.from_dict(story_data["knowledge_graph"])
+                    _session_kgs[session_id] = kg
+        except Exception:
+            pass
+
     # Normal chat flow
-    agent = build_chat_agent(session_id, state)
+    agent = build_chat_agent(session_id, state, kg=kg)
     response = agent(req.content)
     _LOG.info("Chat REST [%s]: %s -> %s", session_id, req.content[:60], response.get("content", "")[:60])
 
@@ -257,6 +286,20 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
 
     # Check KG for existing answer
     kg = _session_kgs.get(session_id)
+    if kg is None:
+        # Try to load KG from story.json
+        try:
+            from backend.services.session_manager import get_session_dir
+            from src.agent.knowledge_graph import KnowledgeGraph
+            story_path = get_session_dir(session_id) / "story.json"
+            if story_path.exists():
+                story_data = json.loads(story_path.read_text())
+                if "knowledge_graph" in story_data:
+                    kg = KnowledgeGraph.from_dict(story_data["knowledge_graph"])
+                    _session_kgs[session_id] = kg
+                    _LOG.info("Loaded KG from story.json for session %s", session_id)
+        except Exception as exc:
+            _LOG.warning("Failed to load KG from story.json: %s", exc)
     if kg is not None:
         existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
         if existing and existing.confidence > 0.6:
