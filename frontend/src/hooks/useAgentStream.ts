@@ -22,6 +22,8 @@ type StreamEvent =
   | { type: "subagent_start"; hypothesis_id?: string; notebook_id?: string; title?: string }
   | { type: "subagent_complete"; hypothesis_id?: string; notebook_id?: string; finding?: string; confidence?: number }
   | { type: "subagent_timeout"; hypothesis_id?: string }
+  | { type: "subagents_dispatched"; notebook_id?: string; loop_number?: number; count?: number; hypothesis_ids?: string[]; titles?: string[] }
+  | { type: "subagents_returned"; notebook_id?: string; loop_number?: number; results_count?: number }
   | { type: "loop_start"; loop_number?: number; total_loops?: number }
   | { type: "loop_complete"; loop_number?: number }
   | { type: "complete"; summary?: string };
@@ -60,6 +62,7 @@ export function useAgentStream(sessionId: string) {
             break;
 
           case "cell_write": {
+            const notebookId = (data as any).notebook_id || "main";
             // Extract hypothesis ID first (needed for activity log)
             const hypMatch = data.cell_id?.match(/^(h\d+)_/);
             const hypId = hypMatch ? hypMatch[1] : undefined;
@@ -73,7 +76,11 @@ export function useAgentStream(sessionId: string) {
               executing: false,
               error: null,
             };
-            store.appendCell(cell, { markFixed: !!data.overwrite });
+            if (notebookId !== "main") {
+              store.appendCellToNotebook(notebookId, cell, { markFixed: !!data.overwrite });
+            } else {
+              store.appendCell(cell, { markFixed: !!data.overwrite });
+            }
             store.setLatestThinking("");  // clear thinking when cell appears
             store.setAgentActivity(data.overwrite ? "fixing" : "generating", data.overwrite ? "Redoing failed cell with corrected code" : (data.source || ""), {
               cellId: data.cell_id,
@@ -92,17 +99,36 @@ export function useAgentStream(sessionId: string) {
             break;
           }
 
-          case "cell_executing":
-            store.setCellExecuting(data.cell_id, true);
+          case "cell_executing": {
+            const notebookId_exec = (data as any).notebook_id || "main";
+            if (notebookId_exec === "main") {
+              store.setCellExecuting(data.cell_id, true);
+            }
+            // For investigation notebooks, the executing state is handled by the tab badge
             store.setAgentActivity("executing", "Running cell...", { cellId: data.cell_id });
             break;
+          }
 
-          case "cell_output":
-            store.setCellExecuting(data.cell_id, false);
-            store.updateCellOutputs(data.cell_id, data.outputs || []);
+          case "cell_output": {
+            const notebookId_out = (data as any).notebook_id || "main";
+            if (notebookId_out !== "main") {
+              // Update cell in investigation notebook
+              store.appendCellToNotebook(notebookId_out, {
+                id: data.cell_id,
+                cell_type: "code",
+                source: "",
+                outputs: data.outputs || [],
+                execution_count: null,
+                executing: false,
+                error: null,
+              });
+            } else {
+              store.setCellExecuting(data.cell_id, false);
+              store.updateCellOutputs(data.cell_id, data.outputs || []);
+            }
             // Show brief status for significant outputs
             const outputText = (data.outputs || [])
-                .map((o) => o.text || o.data?.["text/plain"] || "")
+                .map((o: any) => o.text || o.data?.["text/plain"] || "")
                 .join("")
                 .trim();
             if (outputText && outputText.length > 10) {
@@ -110,23 +136,29 @@ export function useAgentStream(sessionId: string) {
                 store.setLatestThinking(firstLine);
             }
             break;
+          }
 
-          case "cell_error":
-            store.setCellExecuting(data.cell_id, false);
-            store.setCellError(data.cell_id, data.error || "Unknown error");
-            if (data.traceback) {
-              store.updateCellOutputs(data.cell_id, [{
-                output_type: "error",
-                ename: "Error",
-                evalue: data.error,
-                traceback: Array.isArray(data.traceback) ? data.traceback.flat() : [],
-              }]);
+          case "cell_error": {
+            const notebookId_err = (data as any).notebook_id || "main";
+            if (notebookId_err === "main") {
+              store.setCellExecuting(data.cell_id, false);
+              store.setCellError(data.cell_id, data.error || "Unknown error");
+              if (data.traceback) {
+                store.updateCellOutputs(data.cell_id, [{
+                  output_type: "error",
+                  ename: "Error",
+                  evalue: data.error,
+                  traceback: Array.isArray(data.traceback) ? data.traceback.flat() : [],
+                }]);
+              }
             }
+            // Investigation notebook errors are tracked in the subagent's result
             store.setAgentActivity("fixing", `Fixing: ${data.error || "Unknown error"}`, {
               cellId: data.cell_id,
               cellType: "code",
             });
             break;
+          }
 
           case "cell_update":
             store.overwriteCell(data.cell_id, data.source || "");
@@ -182,24 +214,40 @@ export function useAgentStream(sessionId: string) {
             break;
 
           case "subagent_start":
-            store.setAgentActivity("thinking", `Starting investigation: ${data.title || ""}`, {
-              hypothesisId: data.hypothesis_id,
-            });
             if (data.notebook_id && data.title) {
+              store.ensureNotebook(data.notebook_id, data.title);
+              store.setNotebookStatus(data.notebook_id, "running");
               store.addHypothesisGroup(data.notebook_id, data.title);
             }
+            store.setAgentActivity("thinking", `Starting: ${data.title || ""}`, {
+              hypothesisId: data.hypothesis_id,
+            });
             break;
 
           case "subagent_complete":
-            store.setAgentActivity("complete", `Investigation complete: ${(data.finding || "").slice(0, 80)}`, {
+            if (data.notebook_id) {
+              store.setNotebookStatus(data.notebook_id, "complete");
+            }
+            store.setAgentActivity("complete", `Done: ${(data.finding || "").slice(0, 80)}`, {
               hypothesisId: data.hypothesis_id,
             });
             break;
 
           case "subagent_timeout":
+            if ((data as any).notebook_id) {
+              store.setNotebookStatus((data as any).notebook_id, "timeout");
+            }
             store.setAgentActivity("fixing", "Investigation timed out", {
               hypothesisId: data.hypothesis_id,
             });
+            break;
+
+          case "subagents_dispatched":
+            store.setAgentActivity("thinking", `Dispatched ${(data as any).count || 0} subagents...`);
+            break;
+
+          case "subagents_returned":
+            store.setAgentActivity("thinking", `${(data as any).results_count || 0} investigations complete. Compiling...`);
             break;
 
           case "loop_start":

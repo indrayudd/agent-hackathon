@@ -2,13 +2,18 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useNotebookStore } from "@/stores/notebookStore";
+import type { Cell } from "@/lib/types";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useKernel } from "@/hooks/useKernel";
 import NotebookCell from "./NotebookCell";
+import NotebookTabs from "./NotebookTabs";
 import ThinkingBlock from "./ThinkingBlock";
 
 export default function NotebookPane() {
   const { cells, addCell, updateCellOutputs, pipelineRunning, currentPhase, latestThinking } = useNotebookStore();
+  const activeNbId = useNotebookStore((s: any) => s.activeNotebookId) as string;
+  const investigationCells = useNotebookStore((s: any) => s.notebooks[s.activeNotebookId]?.cells || []) as Cell[];
+  const displayCells = activeNbId === "main" ? cells : investigationCells;
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const { status, executeCell } = useKernel(activeSessionId ?? "");
   const [activeCellId, setActiveCellId] = useState<string | null>(null);
@@ -116,7 +121,7 @@ export default function NotebookPane() {
         manualIntentTimerRef.current = null;
       }
     };
-  }, [cells.length, latestThinking, currentPhase, pipelineRunning, scrollToBottom]);
+  }, [displayCells.length, latestThinking, currentPhase, pipelineRunning, scrollToBottom]);
 
   useEffect(() => {
     const el = contentRef.current;
@@ -184,6 +189,9 @@ export default function NotebookPane() {
         </div>
       </div>
 
+      {/* Notebook tabs (only shown when investigation notebooks exist) */}
+      <NotebookTabs />
+
       {/* Phase progress bar */}
       {pipelineRunning && currentPhase && (
         <div className="px-4 py-1.5 bg-primary/5 border-b border-primary/10">
@@ -209,7 +217,7 @@ export default function NotebookPane() {
       >
         <div ref={contentRef} className="max-w-4xl mx-auto relative">
           <div className="pointer-events-none absolute inset-x-0 -top-6 h-24 bg-gradient-to-b from-primary/5 via-transparent to-transparent" />
-          {cells.length === 0 ? (
+          {displayCells.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-on-surface-variant text-sm font-body gap-2">
               <p>No cells yet</p>
               <button
@@ -221,7 +229,7 @@ export default function NotebookPane() {
             </div>
           ) : (
             <>
-              {cells.map((cell) => (
+              {displayCells.map((cell) => (
                 <NotebookCell
                   key={cell.id}
                   cell={cell}
