@@ -202,6 +202,9 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                 "cell_phases": state.cell_phases,
             }
             set_session_state(session_id, chat_state)
+            if kg is not None:
+                from backend.routers.chat import set_session_kg
+                set_session_kg(session_id, kg)
             _LOG.info("Chat state set for session %s: %d findings, %d numeric cols",
                       session_id, len(state.findings), len(state.numeric_cols))
         except Exception as exc:

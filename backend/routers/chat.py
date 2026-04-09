@@ -16,6 +16,11 @@ router = APIRouter(tags=["chat"])
 
 # In-memory state cache per session (populated by pipeline run)
 _session_states: dict[str, dict] = {}
+_session_kgs: dict = {}
+
+def set_session_kg(session_id: str, kg) -> None:
+    """Called after pipeline completes to make KG available to chat."""
+    _session_kgs[session_id] = kg
 
 
 def set_session_state(session_id: str, state: dict) -> None:
@@ -249,6 +254,22 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
     from backend.services.session_manager import get_session_dir
     from backend.routers.stream import push_event
     from src.agent.subagent import run_subagent
+
+    # Check KG for existing answer
+    kg = _session_kgs.get(session_id)
+    if kg is not None:
+        existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
+        if existing and existing.confidence > 0.6:
+            return {
+                "role": "agent",
+                "type": "text",
+                "content": (
+                    f"**Previously investigated:** {existing.phase.replace('Investigation: ', '')}\n\n"
+                    f"{existing.text}\n\n"
+                    f"*Confidence: {existing.confidence:.0%}* (from earlier investigation)"
+                ),
+                "action_code": None,
+            }
 
     _LOG.info("Running hypothesis investigation for session %s: %s", session_id, hyp.title)
 
