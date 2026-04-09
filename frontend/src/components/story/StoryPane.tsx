@@ -13,7 +13,7 @@ import {
   defaultPlotDisplay,
   normalizeReportPlot,
 } from "@/lib/reportViz";
-import type { CellOutput, StoryPlot, StoryPlotVizSpecInput } from "@/lib/types";
+import type { Cell, CellOutput, StoryPlot, StoryPlotVizSpecInput } from "@/lib/types";
 import StorySectionCard from "./StorySectionCard";
 
 /** Inline markdown — renders as a <span> without wrapping <p> tags */
@@ -143,21 +143,18 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const [retryCount, setRetryCount] = useState(0);
   const [changesDetected, setChangesDetected] = useState(false);
 
-  const notebooks = useNotebookStore((s) => s.notebooks);
-  // Compute a simple hash of all cell sources across all notebooks
+  // Compute a simple hash of MAIN notebook cell sources only.
+  // Investigation notebooks (agent_N, chat_*) are separate tabs — their
+  // changes should not trigger "changes detected" on the story.
   const contentHash = useMemo(() => {
     let hash = 0;
-    const allCells = [...cells];
-    for (const nb of Object.values(notebooks)) {
-      if (nb.id !== "main") allCells.push(...nb.cells);
-    }
-    for (const cell of allCells) {
+    for (const cell of cells) {
       for (let i = 0; i < cell.source.length; i++) {
         hash = ((hash << 5) - hash + cell.source.charCodeAt(i)) | 0;
       }
     }
     return hash;
-  }, [cells, notebooks]);
+  }, [cells]);
 
   const storyGeneratedAt = generatedAt;
 
@@ -233,7 +230,26 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
       return;
     }
 
+    // Find which notebook owns this cell and switch to it
+    const store = useNotebookStore.getState();
+    const notebooks = store.notebooks;
+
+    // Check main notebook first
+    let targetNotebook = "main";
+    if (!store.cells.some((c: Cell) => c.id === cellId)) {
+      // Search investigation notebooks
+      for (const [nbId, nb] of Object.entries(notebooks)) {
+        if (nbId !== "main" && nb.cells.some((c: Cell) => c.id === cellId)) {
+          targetNotebook = nbId;
+          break;
+        }
+      }
+    }
+
+    store.setActiveNotebook(targetNotebook);
     setActiveTab("notebook");
+
+    // Wait for notebook switch to render, then scroll to cell
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         const el = document.getElementById(`cell-${cellId}`);
@@ -259,6 +275,8 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
         const data = await res.json();
         setStory(data);
         setChangesDetected(false);
+        // Reset baseline to current hash so it doesn't immediately re-trigger
+        baselineHashRef.current = contentHash;
       }
     } catch {
       // ignore
@@ -414,11 +432,6 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
                 )}
                 {regenerating ? "Regenerating..." : "Regenerate"}
               </button>
-              {changesDetected && !regenerating && (
-                <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-green-600 font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                  Changes detected!
-                </span>
-              )}
             </div>
             <button
               onClick={() => handleExport("pdf")}

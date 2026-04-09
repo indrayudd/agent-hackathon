@@ -23,7 +23,7 @@ from pydantic import BaseModel
 class RunConfig(BaseModel):
     max_subagents: int = 3
     max_loops: int = 2
-    loop_timeout: int = 180
+    loop_timeout: int = 300
 
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ _running: dict[str, threading.Thread] = {}
 
 
 def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path,
-                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 180):
+                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 300):
     """Run the EDA agent loop in a background thread, streaming all events."""
     try:
         (session_dir / "status.json").write_text(

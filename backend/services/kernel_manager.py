@@ -550,3 +550,63 @@ def is_kernel_alive(session_id: str) -> bool:
     """Check if a session has an active kernel."""
     km = _kernels.get(session_id)
     return km is not None and km.is_alive()
+
+
+def get_kernel_connection_file(session_id: str) -> str | None:
+    """Return the connection file path for an existing kernel (for child-process use)."""
+    km = _kernels.get(session_id)
+    if km is None or not km.is_alive():
+        return None
+    return km.connection_file
+
+
+def execute_code_on_connection(
+    connection_file: str,
+    code: str,
+    timeout: int = 60,
+    cell_id: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Execute code on a kernel given its connection file (safe for child processes)."""
+    client = jupyter_client.BlockingKernelClient()
+    client.load_connection_file(connection_file)
+    client.start_channels()
+    try:
+        client.wait_for_ready(timeout=10)
+        if cell_id:
+            code = (
+                f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
+                "__agenticeda_plot_spec_emitted = 0\n"
+                "__agenticeda_plot_spec_has_source = False\n"
+                f"{code}\n"
+                "_agenticeda_emit_fallback_plot_specs()\n"
+            )
+        msg_id = client.execute(code)
+        outputs: list[dict[str, Any]] = []
+        error: str | None = None
+        while True:
+            try:
+                msg = client.get_iopub_msg(timeout=timeout)
+            except queue.Empty:
+                error = f"Execution timed out after {timeout}s"
+                break
+            if msg["parent_header"].get("msg_id") != msg_id:
+                continue
+            msg_type = msg["msg_type"]
+            content = msg["content"]
+            if msg_type == "stream":
+                outputs.append({"output_type": "stream", "name": content.get("name", "stdout"), "text": content.get("text", "")})
+            elif msg_type in ("execute_result", "display_data"):
+                data = content.get("data", {})
+                clean_data = {}
+                for k, v in data.items():
+                    clean_data[k] = v if isinstance(v, str) else "".join(v) if isinstance(v, list) else str(v)
+                outputs.append({"output_type": msg_type, "data": clean_data, "metadata": content.get("metadata", {})})
+            elif msg_type == "error":
+                error = f"{content.get('ename', 'Error')}: {content.get('evalue', '')}"
+                outputs.append({"output_type": "error", "ename": content.get("ename", ""), "evalue": content.get("evalue", ""), "traceback": content.get("traceback", [])})
+            elif msg_type == "status":
+                if content["execution_state"] == "idle":
+                    break
+        return outputs, error
+    finally:
+        client.stop_channels()

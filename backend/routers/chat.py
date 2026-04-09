@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -278,18 +279,19 @@ def _snapshot(session_id: str, label: str):
 
 
 def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_question: str) -> dict:
-    """Run a full subagent investigation for a user hypothesis."""
-    from backend.services.kernel_manager import execute_code, is_kernel_alive
+    """Run a full subagent investigation for a user hypothesis.
+
+    Returns immediately with an acknowledgement — the actual investigation
+    runs in a background process and streams results via WebSocket events.
+    """
+    from backend.services.kernel_manager import execute_code, is_kernel_alive, get_kernel_connection_file
     from backend.services.session_manager import get_session_dir
     from backend.routers.stream import push_event
-    from src.agent.subagent import run_subagent
 
     # Check KG for existing answer
     kg = _session_kgs.get(session_id)
     if kg is None:
-        # Try to load KG from story.json
         try:
-            from backend.services.session_manager import get_session_dir
             from src.agent.knowledge_graph import KnowledgeGraph
             story_path = get_session_dir(session_id) / "story.json"
             if story_path.exists():
@@ -300,9 +302,10 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
                     _LOG.info("Loaded KG from story.json for session %s", session_id)
         except Exception as exc:
             _LOG.warning("Failed to load KG from story.json: %s", exc)
+
     if kg is not None:
-        existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
-        if existing and existing.confidence > 0.6:
+        existing = kg.find_similar_hypothesis(hyp, threshold=0.8)
+        if existing and existing.confidence > 0.85:
             return {
                 "role": "agent",
                 "type": "text",
@@ -316,29 +319,9 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
 
     _LOG.info("Running hypothesis investigation for session %s: %s", session_id, hyp.title)
 
-    # Create a dedicated notebook for this chat investigation
     chat_notebook_id = f"chat_{int(time.time())}"
 
-    # Write investigation start to main notebook
-    push_event(session_id, {
-        "type": "cell_write",
-        "cell_id": f"chat_main_{int(time.time())}",
-        "cell_type": "markdown",
-        "source": f"---\n\n### Chat Investigation: {hyp.title}\n\n> {hyp.description}\n\n*Spawning investigation subagent...*",
-        "notebook_id": "main",
-    })
-
-    push_event(session_id, {
-        "type": "subagent_start",
-        "hypothesis_id": hyp.id,
-        "notebook_id": chat_notebook_id,
-        "title": hyp.title,
-    })
-
-    # Note: don't auto-switch to chat notebook tab — let the user choose to view it.
-    # The tab will appear in the sidebar/tab bar via the subagent_start event.
-
-    # Ensure kernel has data
+    # Ensure kernel has data before spawning process
     if not is_kernel_alive(session_id):
         session_dir = get_session_dir(session_id)
         uploads = list((session_dir / "uploads").iterdir())
@@ -346,15 +329,43 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             load_code = f'import pandas as pd\nimport numpy as np\nimport matplotlib.pyplot as plt\n%matplotlib inline\ndf = pd.read_csv("{uploads[0]}")\nprint(f"Loaded {{len(df)}} rows")'
             execute_code(session_id, load_code, timeout=15)
 
-    # Push investigation start
+    conn_file = get_kernel_connection_file(session_id)
+    if conn_file is None:
+        return {
+            "role": "agent",
+            "type": "text",
+            "content": f"Cannot investigate '{hyp.title}': kernel is not available.",
+            "action_code": None,
+        }
+
+    # Push start events synchronously so frontend sees the tab immediately
+    push_event(session_id, {
+        "type": "cell_write",
+        "cell_id": f"chat_main_{int(time.time())}",
+        "cell_type": "markdown",
+        "source": f"---\n\n### Chat Investigation: {hyp.title}\n\n> {hyp.description}\n\n*Spawning investigation subagent...*",
+        "notebook_id": "main",
+    })
+    push_event(session_id, {
+        "type": "subagent_start",
+        "hypothesis_id": hyp.id,
+        "notebook_id": chat_notebook_id,
+        "title": hyp.title,
+    })
     push_event(session_id, {"type": "phase_transition", "phase": f"Chat Investigation: {hyp.title}", "notebook_id": chat_notebook_id})
-    push_event(session_id, {"type": "cell_write", "cell_id": f"chat_hyp_header", "cell_type": "markdown", "source": f"### Chat Investigation: {hyp.title}\n\n{hyp.description}", "notebook_id": chat_notebook_id})
+    push_event(session_id, {"type": "cell_write", "cell_id": "chat_hyp_header", "cell_type": "markdown", "source": f"### Chat Investigation: {hyp.title}\n\n{hyp.description}", "notebook_id": chat_notebook_id})
 
-    # Get current cell count from notebook
-    cell_counter = [int(time.time()) % 10000]
+    # Run investigation in a background process
+    import multiprocessing as mp
+    from src.agent.subagent_worker import subagent_process_worker
 
-    try:
-        result = run_subagent(
+    event_queue: mp.Queue = mp.Queue()
+    result_queue: mp.Queue = mp.Queue()
+
+    p = mp.Process(
+        target=subagent_process_worker,
+        kwargs=dict(
+            connection_file=conn_file,
             hypothesis_id=hyp.id,
             hypothesis_title=hyp.title,
             hypothesis_description=hyp.description,
@@ -362,109 +373,178 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             all_columns=state.get("columns", []),
             time_col=state.get("time_col"),
             session_id=session_id,
-            push_event=push_event,
-            execute_code=execute_code,
-            cell_counter=cell_counter,
+            event_queue=event_queue,
+            cell_counter_start=int(time.time()) % 10000,
             max_cells=5,
             notebook_id=chat_notebook_id,
             kg_context=kg.get_context_for_hypothesis_generation() if kg else "",
-        )
+            result_queue=result_queue,
+            deadline=time.time() + 240,  # 4 minute deadline for chat investigations
+        ),
+        daemon=True,
+    )
+    p.start()
 
-        # Write conclusion cell to the chat notebook
-        conf_pct = int(result.confidence * 100)
-        conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
-        push_event(session_id, {
-            "type": "cell_write",
-            "cell_id": f"{chat_notebook_id}_conclusion",
-            "cell_type": "markdown",
-            "source": f"### Conclusion\n\n{result.finding}\n\n**Confidence:** {conf_label} ({conf_pct}%)",
-            "notebook_id": chat_notebook_id,
-        })
+    # Background thread to drain events and collect result
+    def _background_finish():
+        drain_deadline = time.time() + 300  # 5 min hard cap
+        # Drain events from child process → push_event
+        while time.time() < drain_deadline:
+            try:
+                evt = event_queue.get(timeout=2)
+                if evt is None:
+                    break
+                push_event(session_id, evt)
+            except Exception:
+                if not p.is_alive():
+                    break
 
-        # Add investigation result to KG
-        kg = _session_kgs.get(session_id)
-        if kg is not None:
-            from src.agent.knowledge_graph import KGEdge
-            nid = kg.add_investigation(
-                hypothesis_id=hyp.id,
-                hypothesis_title=hyp.title,
-                finding=result.finding,
-                evidence_cells=result.cell_ids,
-                plot_cells=result.plot_cell_ids,
-                confidence=result.confidence,
-                sub_findings=result.sub_findings,
-                columns=getattr(result, 'relevant_cols', []) or [],
-                analysis_type="chat_investigation",
-            )
-            # Store plot images in KG metadata
-            all_images = []
-            for cid, imgs in getattr(result, 'images', {}).items():
-                for img in imgs:
-                    all_images.append({"cell_id": cid, "image_png": img})
-            if all_images:
-                node = kg.nodes.get(nid)
-                if node:
-                    node.metadata["plot_images"] = all_images
-            _LOG.info("Chat investigation added to KG: %s (confidence=%.2f)", hyp.title, result.confidence)
+        # Ensure process is finished; terminate if hung
+        p.join(timeout=10)
+        if p.is_alive():
+            _LOG.warning("Chat investigation process still alive, terminating")
+            p.terminate()
+            p.join(timeout=5)
 
-        # Write compilation to main notebook
-        push_event(session_id, {
-            "type": "cell_write",
-            "cell_id": f"chat_result_{int(time.time())}",
-            "cell_type": "markdown",
-            "source": f"**Chat Investigation Result: {hyp.title}**\n\n{result.finding}\n\n*Confidence: {conf_label} ({conf_pct}%)*",
-            "notebook_id": "main",
-        })
-
-        # Update story with new investigation
+        # Collect result
         try:
-            session_dir = get_session_dir(session_id)
-            story_path = session_dir / "story.json"
-            if story_path.exists():
-                story = json.loads(story_path.read_text())
-                story.setdefault("sections", []).append({
-                    "phase": f"Investigation: {hyp.title}",
-                    "title": hyp.title,
-                    "content": result.finding,
-                    "cell_ids": result.cell_ids,
-                    "type": "investigation",
-                    "confidence": result.confidence,
-                })
-                story["generated_at"] = datetime.datetime.now().isoformat()
-                story_path.write_text(json.dumps(story, default=str, indent=2))
+            status, data = result_queue.get(timeout=5)
+        except Exception:
+            status, data = "error", "No result from investigation process"
 
-            from src.reporting.versioning import create_snapshot
-            create_snapshot(session_id, f"Investigation: {hyp.title[:40]}")
-        except Exception as exc:
-            _LOG.warning("Story update/snapshot failed for investigation %s: %s", hyp.title, exc)
+        if status == "ok":
+            from src.agent.subagent import InvestigationResult
+            # Load images from temp file
+            images = {}
+            images_file = data.get("_images_file")
+            if images_file:
+                try:
+                    import os as _os
+                    with open(images_file) as f:
+                        images = json.loads(f.read())
+                    _os.remove(images_file)
+                except Exception:
+                    pass
 
-        push_event(session_id, {
-            "type": "subagent_complete",
-            "hypothesis_id": hyp.id,
-            "notebook_id": chat_notebook_id,
-            "finding": result.finding,
-            "confidence": result.confidence,
-        })
+            result = InvestigationResult(
+                hypothesis_id=data["hypothesis_id"],
+                hypothesis_title=data["hypothesis_title"],
+                finding=data["finding"],
+                cell_ids=data.get("cell_ids", []),
+                plot_cell_ids=data.get("plot_cell_ids", []),
+                confidence=data.get("confidence", 0.5),
+                sub_findings=data.get("sub_findings", []),
+                relevant_cols=data.get("relevant_cols", []),
+                images=images,
+            )
+            _finalize_chat_investigation(session_id, hyp, chat_notebook_id, result)
+        else:
+            _LOG.warning("Chat investigation failed: %s", data)
+            push_event(session_id, {
+                "type": "subagent_complete",
+                "hypothesis_id": hyp.id,
+                "notebook_id": chat_notebook_id,
+                "finding": f"Investigation failed: {data}",
+                "confidence": 0.0,
+            })
 
-        return {
-            "role": "agent",
-            "type": "text",
-            "content": f"**Investigation: {hyp.title}**\n\n{result.finding}\n\n*Confidence: {result.confidence:.0%}*",
-            "action_code": None,
-        }
+    bg = threading.Thread(target=_background_finish, daemon=True)
+    bg.start()
 
+    # Return immediately — results will stream via WebSocket
+    return {
+        "role": "agent",
+        "type": "text",
+        "content": f"**Investigating: {hyp.title}**\n\nI've started a background investigation. Watch the **{chat_notebook_id}** tab in the notebook for live progress. Results will appear when complete.",
+        "action_code": None,
+    }
+
+
+def _finalize_chat_investigation(session_id: str, hyp, chat_notebook_id: str, result) -> None:
+    """Called after a background chat investigation completes — writes conclusion, updates KG and story."""
+    from backend.services.session_manager import get_session_dir
+    from backend.routers.stream import push_event
+
+    conf_pct = int(result.confidence * 100)
+    conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+
+    push_event(session_id, {
+        "type": "cell_write",
+        "cell_id": f"{chat_notebook_id}_conclusion",
+        "cell_type": "markdown",
+        "source": f"### Conclusion\n\n{result.finding}\n\n**Confidence:** {conf_label} ({conf_pct}%)",
+        "notebook_id": chat_notebook_id,
+    })
+
+    # Add to KG
+    kg = _session_kgs.get(session_id)
+    if kg is not None:
+        nid = kg.add_investigation(
+            hypothesis_id=hyp.id,
+            hypothesis_title=hyp.title,
+            finding=result.finding,
+            evidence_cells=result.cell_ids,
+            plot_cells=result.plot_cell_ids,
+            confidence=result.confidence,
+            sub_findings=result.sub_findings,
+            columns=getattr(result, 'relevant_cols', []) or [],
+            analysis_type="chat_investigation",
+        )
+        all_images = []
+        for cid, imgs in getattr(result, 'images', {}).items():
+            for img in imgs:
+                all_images.append({"cell_id": cid, "image_png": img})
+        if all_images:
+            node = kg.nodes.get(nid)
+            if node:
+                node.metadata["plot_images"] = all_images
+        _LOG.info("Chat investigation added to KG: %s (confidence=%.2f)", hyp.title, result.confidence)
+
+    # Write result to main notebook
+    push_event(session_id, {
+        "type": "cell_write",
+        "cell_id": f"chat_result_{int(time.time())}",
+        "cell_type": "markdown",
+        "source": f"**Chat Investigation Result: {hyp.title}**\n\n{result.finding}\n\n*Confidence: {conf_label} ({conf_pct}%)*",
+        "notebook_id": "main",
+    })
+
+    # Append to story.json (not replace)
+    try:
+        session_dir = get_session_dir(session_id)
+        story_path = session_dir / "story.json"
+        if story_path.exists():
+            story = json.loads(story_path.read_text())
+            # Check for contradictions — if new finding contradicts existing, mark old as superseded
+            existing_sections = story.get("sections", [])
+            for sec in existing_sections:
+                if sec.get("type") == "investigation" and sec.get("title") == hyp.title:
+                    sec["superseded"] = True
+                    sec["superseded_by"] = result.finding
+            story.setdefault("sections", []).append({
+                "phase": f"Investigation: {hyp.title}",
+                "title": hyp.title,
+                "content": result.finding,
+                "cell_ids": result.cell_ids,
+                "plot_cell_ids": result.plot_cell_ids,
+                "type": "investigation",
+                "confidence": result.confidence,
+            })
+            story["generated_at"] = datetime.datetime.now().isoformat()
+            # Persist KG too
+            if kg is not None:
+                story["knowledge_graph"] = kg.to_dict()
+            story_path.write_text(json.dumps(story, default=str, indent=2))
+
+        from src.reporting.versioning import create_snapshot
+        create_snapshot(session_id, f"Investigation: {hyp.title[:40]}")
     except Exception as exc:
-        _LOG.warning("Hypothesis investigation failed: %s", exc)
-        push_event(session_id, {
-            "type": "subagent_complete",
-            "hypothesis_id": getattr(hyp, 'id', 'unknown'),
-            "notebook_id": chat_notebook_id,
-            "finding": f"Investigation failed: {exc}",
-            "confidence": 0.0,
-        })
-        return {
-            "role": "agent",
-            "type": "text",
-            "content": f"I tried to investigate '{hyp.title}' but encountered an error: {exc}",
-            "action_code": None,
-        }
+        _LOG.warning("Story update failed for investigation %s: %s", hyp.title, exc)
+
+    push_event(session_id, {
+        "type": "subagent_complete",
+        "hypothesis_id": hyp.id,
+        "notebook_id": chat_notebook_id,
+        "finding": result.finding,
+        "confidence": result.confidence,
+    })

@@ -173,7 +173,12 @@ def run_agent(
         if finding:
             # Use goal.name as key to prevent duplicates
             state.findings = [f for f in state.findings if f.get("goal") != goal.name]
-            state.findings.append({"phase": goal.phase, "finding": finding, "goal": goal.name})
+            state.findings.append({
+                "phase": goal.phase,
+                "finding": finding,
+                "goal": goal.name,
+                "raw_output": output_text[:2000],  # preserve raw numbers for KG/story
+            })
 
         # Check for ONE follow-up only (not 3) — must be genuinely surprising
         step = decide_next_step(
@@ -549,8 +554,8 @@ def run_agent(
             # Deduplicate against KG
             novel = []
             for hyp in hypotheses:
-                existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
-                if existing and existing.confidence > 0.6:
+                existing = kg.find_similar_hypothesis(hyp, threshold=0.75)
+                if existing and existing.confidence > 0.8:
                     _think(f"Skipping '{hyp.title}' - already investigated (confidence: {existing.confidence:.0%})")
                     continue
                 novel.append(hyp)
@@ -612,41 +617,53 @@ def run_agent(
         else:
             _think("Using main kernel for investigations (no parquet checkpoint).")
 
-        # Run subagents via ThreadPoolExecutor
-        import concurrent.futures
+        # Run subagents via multiprocessing — true parallelism, no GIL
+        import multiprocessing as mp
+        import threading
+        from backend.services.kernel_manager import get_kernel_connection_file
+        from src.agent.subagent_worker import subagent_process_worker
+
         loop_cell_counters = [[1000 + loop_num * 1000 + i * 100] for i in range(len(hypotheses))]
         cell_counters.extend(loop_cell_counters)
         results: list[InvestigationResult] = []
 
-        # Dispatch subagents in parallel — don't write hypothesis cells yet
-        # Note: agent tabs accumulate across loops (loop divider provides visual separation)
-        actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
-        hypothesis_order = []  # Track original order for result writing
-        # ThreadPoolExecutor is correct here: subagent work is I/O-bound (kernel IPC + LLM API calls).
-        # The GIL is released during I/O, so threads run in true parallel.
-        # ProcessPoolExecutor won't work because push_event/execute_code callbacks aren't picklable.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(actual_workers, 1)) as executor:
-            futures = {}
-            for i, (hyp, kid) in enumerate(zip(hypotheses, sub_kernel_ids)):
-                notebook_id = f"agent_{i + 1}"
-                hypothesis_order.append((hyp, notebook_id))
+        hypothesis_order = []
+        processes: list[tuple] = []  # (process, hyp, notebook_id, event_queue, result_queue)
 
-                push_event(session_id, {
-                    "type": "subagent_start",
-                    "hypothesis_id": hyp.id,
-                    "notebook_id": notebook_id,
-                    "title": hyp.title,
-                })
-                push_event(session_id, {
-                    "type": "cell_write",
-                    "cell_id": f"{notebook_id}_loop{loop_num}_header",
-                    "cell_type": "markdown",
-                    "source": f"## Loop {loop_num}: {hyp.title}\n\n> {hyp.description}",
-                    "notebook_id": notebook_id,
-                })
+        # Shared event queue — one drainer thread forwards events to push_event
+        event_queue: mp.Queue = mp.Queue()
+        active_workers = 0
 
-                future = executor.submit(
-                    run_subagent,
+        for i, (hyp, kid) in enumerate(zip(hypotheses, sub_kernel_ids)):
+            notebook_id = f"agent_{i + 1}"
+            hypothesis_order.append((hyp, notebook_id))
+
+            push_event(session_id, {
+                "type": "subagent_start",
+                "hypothesis_id": hyp.id,
+                "notebook_id": notebook_id,
+                "title": hyp.title,
+            })
+            push_event(session_id, {
+                "type": "cell_write",
+                "cell_id": f"{notebook_id}_loop{loop_num}_header",
+                "cell_type": "markdown",
+                "source": f"## Loop {loop_num}: {hyp.title}\n\n> {hyp.description}",
+                "notebook_id": notebook_id,
+            })
+
+            # Get connection file for the sub-kernel (or main kernel)
+            conn_file = get_kernel_connection_file(kid) if kid else get_kernel_connection_file(session_id)
+            if conn_file is None:
+                _LOG.warning("No connection file for kernel %s, skipping", kid or session_id)
+                continue
+
+            result_queue: mp.Queue = mp.Queue()
+            subagent_deadline = time.time() + max(loop_timeout - 30, 60)  # leave 30s margin
+            p = mp.Process(
+                target=subagent_process_worker,
+                kwargs=dict(
+                    connection_file=conn_file,
                     hypothesis_id=hyp.id,
                     hypothesis_title=hyp.title,
                     hypothesis_description=hyp.description,
@@ -654,41 +671,116 @@ def run_agent(
                     all_columns=state.columns,
                     time_col=state.time_col,
                     session_id=session_id,
-                    push_event=push_event,
-                    execute_code=execute_code,
-                    cell_counter=loop_cell_counters[i],
-                    max_cells=4,
-                    kernel_id=kid,
+                    event_queue=event_queue,
+                    cell_counter_start=loop_cell_counters[i][0],
+                    max_cells=5,
                     notebook_id=notebook_id,
                     kg_context=kg.get_context_for_hypothesis_generation() if kg else "",
-                )
-                futures[future] = (hyp, notebook_id)
+                    result_queue=result_queue,
+                    deadline=subagent_deadline,
+                ),
+                daemon=True,
+            )
+            processes.append((p, hyp, notebook_id, result_queue))
+            active_workers += 1
 
-            # Collect results keyed by hypothesis_id for ordered writing
-            results_by_hyp: dict[str, InvestigationResult] = {}
+        # Drainer thread: forward events from child processes to push_event
+        drain_done = threading.Event()
+        def _drain_events():
+            finished = 0
+            drain_deadline = time.time() + loop_timeout + 30  # generous deadline
+            while finished < active_workers and time.time() < drain_deadline:
+                try:
+                    evt = event_queue.get(timeout=2)
+                    if evt is None:
+                        finished += 1
+                        continue
+                    push_event(session_id, evt)
+                except Exception:
+                    # Check if all processes are dead (sentinel lost due to terminate())
+                    all_dead = all(not p.is_alive() for p, _, _, _ in processes)
+                    if all_dead:
+                        break
+            drain_done.set()
+
+        drainer = threading.Thread(target=_drain_events, daemon=True)
+        drainer.start()
+
+        # Start all processes
+        _think(f"Starting {len(processes)} investigation processes (timeout: {loop_timeout}s)...")
+        for p, _, _, _ in processes:
+            p.start()
+
+        # Collect results.
+        # IMPORTANT: Read from result_queue BEFORE p.join() to prevent deadlock.
+        # On macOS, multiprocessing.Queue uses a pipe with limited buffer. If the
+        # child puts data on the queue and the pipe fills up, put() blocks and the
+        # child can't exit, so p.join() hangs forever. Reading first drains the pipe.
+        results_by_hyp: dict[str, InvestigationResult] = {}
+        join_deadline = time.time() + loop_timeout
+
+        for idx, (p, hyp, notebook_id, rq) in enumerate(processes):
+            remaining = max(join_deadline - time.time(), 1)
+            _LOG.info("Waiting for subagent %s (%s) — %.0fs remaining", hyp.id, hyp.title[:40], remaining)
+
+            # First: try to read the result (with timeout). This unblocks the pipe.
             try:
-                for future in concurrent.futures.as_completed(futures, timeout=loop_timeout):
-                    hyp, notebook_id = futures[future]
-                    try:
-                        result = future.result(timeout=10)
-                        results.append(result)
-                        results_by_hyp[hyp.id] = result
-                        state.subagent_run_count += 1
+                status, data = rq.get(timeout=remaining)
+            except Exception:
+                status, data = None, None
 
-                        push_event(session_id, {
-                            "type": "subagent_complete",
-                            "hypothesis_id": hyp.id,
-                            "notebook_id": notebook_id,
-                            "finding": result.finding,
-                            "confidence": result.confidence,
-                        })
-                    except (concurrent.futures.TimeoutError, Exception) as exc:
-                        _LOG.warning("Subagent for %s failed: %s", hyp.id, exc)
-                        push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id})
-                        _think(f"Investigation of '{hyp.title}' failed or timed out. Moving on.")
-            except concurrent.futures.TimeoutError:
-                _LOG.warning("Investigation loop %d timed out after %ds", loop_num, loop_timeout)
-                _think(f"Loop {loop_num} timed out. Collecting partial results.")
+            # Now join — process should exit quickly since queue is drained
+            p.join(timeout=10)
+            if p.is_alive():
+                _LOG.warning("Subagent process for %s still alive after result read, terminating", hyp.id)
+                p.terminate()
+                p.join(timeout=5)
+
+            if status == "ok":
+                # Load images from temp file (avoids pipe deadlock)
+                images = {}
+                images_file = data.get("_images_file")
+                if images_file:
+                    try:
+                        with open(images_file) as f:
+                            images = json.loads(f.read())
+                        os.remove(images_file)
+                    except Exception as img_exc:
+                        _LOG.warning("Failed to load images from %s: %s", images_file, img_exc)
+
+                result = InvestigationResult(
+                    hypothesis_id=data["hypothesis_id"],
+                    hypothesis_title=data["hypothesis_title"],
+                    finding=data["finding"],
+                    cell_ids=data.get("cell_ids", []),
+                    plot_cell_ids=data.get("plot_cell_ids", []),
+                    confidence=data.get("confidence", 0.5),
+                    sub_findings=data.get("sub_findings", []),
+                    relevant_cols=data.get("relevant_cols", []),
+                    images=images,
+                )
+                results.append(result)
+                results_by_hyp[hyp.id] = result
+                state.subagent_run_count += 1
+                push_event(session_id, {
+                    "type": "subagent_complete",
+                    "hypothesis_id": hyp.id,
+                    "notebook_id": notebook_id,
+                    "finding": result.finding,
+                    "confidence": result.confidence,
+                })
+            elif status == "error":
+                _LOG.warning("Subagent for %s returned error: %s", hyp.id, data)
+                push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
+                _think(f"Investigation of '{hyp.title}' failed. Moving on.")
+            else:
+                _LOG.warning("Subagent for %s: no result received (timeout)", hyp.id)
+                push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
+                _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+
+        # Wait for event drainer to finish
+        drain_done.wait(timeout=10)
+        drainer.join(timeout=5)
 
         # Shutdown subagent kernels after this loop
         try:
@@ -701,7 +793,24 @@ def run_agent(
             push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
             break
 
-        # Write compilation summary in main notebook
+        # --- Accumulation phase: write results + ingest into KG ---
+        total_steps = len(hypothesis_order) + 2  # hypotheses + compilation + KG reinforcement
+        step_num = 0
+
+        def _progress(label: str):
+            nonlocal step_num
+            step_num += 1
+            push_event(session_id, {
+                "type": "accumulation_progress",
+                "step": step_num,
+                "total": total_steps,
+                "label": label,
+                "notebook_id": "main",
+            })
+            _think(f"[{step_num}/{total_steps}] {label}")
+
+        _progress(f"Compiling {len(results)} investigation results...")
+
         compilation = f"---\n\n### Loop {loop_num} Results — {len(results)} Investigation(s)\n\n"
         for result in results:
             conf_pct = int(result.confidence * 100)
@@ -722,7 +831,8 @@ def run_agent(
             result = results_by_hyp.get(hyp.id)
             cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
 
-            # Write hypothesis description
+            _progress(f"Recording: {hyp.title[:50]}...")
+
             _write_and_run(
                 f"---\n\n### Hypothesis: {hyp.title}\n\n"
                 f"> {hyp.description}\n\n"
@@ -737,7 +847,6 @@ def run_agent(
                 )
                 continue
 
-            # Write finding immediately after its hypothesis
             conf_pct = int(result.confidence * 100)
             conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
             _write_and_run(
@@ -746,7 +855,7 @@ def run_agent(
                 "markdown",
             )
 
-            # Ingest into KG
+            # Ingest into KG (fast — no LLM calls)
             nid = kg.add_investigation(
                 hypothesis_id=result.hypothesis_id,
                 hypothesis_title=result.hypothesis_title,
@@ -761,27 +870,7 @@ def run_agent(
             )
             state.add_finding(f"Investigation: {result.hypothesis_title}", result.finding)
 
-            # Vision analysis of subagent plots
-            for cell_id, images in getattr(result, 'images', {}).items():
-                if images:
-                    _think(f"Analyzing {len(images)} plot(s) from {result.hypothesis_title}...")
-                    try:
-                        visual_finding = interpret_output(
-                            f"Plot from hypothesis: {result.hypothesis_title}",
-                            f"Investigation: {result.hypothesis_title}",
-                            images=images,
-                        )
-                        if visual_finding:
-                            vis_id = kg.add_fact(
-                                visual_finding,
-                                f"Visual: {result.hypothesis_title}",
-                            )
-                            kg.nodes[vis_id].type = "visual_insight"
-                            kg.add_edge(KGEdge(source_id=vis_id, target_id=nid, type="supports"))
-                    except Exception as exc:
-                        _LOG.warning("Vision analysis failed for hypothesis %s: %s", result.hypothesis_title, exc)
-
-            # Store raw plot images in KG metadata for story generation
+            # Store plot images in KG metadata for story generation (no vision LLM call)
             all_images = []
             for cell_id, imgs in getattr(result, 'images', {}).items():
                 for img in imgs:
@@ -790,6 +879,8 @@ def run_agent(
                 node = kg.nodes.get(nid)
                 if node:
                     node.metadata["plot_images"] = all_images
+
+        _progress("Cross-referencing findings...")
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
 
@@ -818,14 +909,51 @@ def run_agent(
     if cell_counters:
         state.cell_count = max(state.cell_count, *(cc[0] for cc in cell_counters))
 
-    # Write conclusions
+    # Synthesize conclusions via LLM — connect threads, identify contradictions, rank
     _transition("Conclusions", "Synthesizing all findings...", render_cell=False)
-    conclusions = kg.get_top_conclusions(5)
-    conclusion_items = "\n".join(f"1. {c}" for c in conclusions) if conclusions else "No conclusions drawn."
+    raw_conclusions = kg.get_top_conclusions(8)
+    all_findings_text = "\n".join(
+        f"- [{f.get('phase', '')}] {f.get('finding', '')} (raw: {f.get('raw_output', '')[:200]})"
+        for f in state.findings
+    )
+
+    if raw_conclusions or all_findings_text.strip():
+        try:
+            from src.config.config import get_chat_model
+            from langchain_core.messages import SystemMessage, HumanMessage
+
+            llm = get_chat_model()
+            kg_context = kg.get_context_for_hypothesis_generation() if kg else ""
+
+            synth_response = llm.invoke([
+                SystemMessage(content=(
+                    "You are writing the final conclusions for an EDA report. Given all findings "
+                    "from multiple investigation loops, write 3-5 numbered conclusions. For each:\n"
+                    "- State the finding with specific numbers\n"
+                    "- Note if multiple investigations confirmed it (cross-reference)\n"
+                    "- Flag any contradictions between investigations\n"
+                    "- Suggest what to investigate next\n"
+                    "Be specific and quantitative. Do NOT use bullet points inside numbered items. "
+                    "Format with markdown. For math notation, use proper LaTeX delimiters: $x$ for inline "
+                    "(e.g., $r = 0.95$, $p < 0.05$, $\\chi^2$). Never write raw LaTeX without $ delimiters."
+                )),
+                HumanMessage(content=(
+                    f"Knowledge graph summary:\n{kg_context[:2000]}\n\n"
+                    f"Top findings by confidence:\n" + "\n".join(f"- {c}" for c in raw_conclusions) + "\n\n"
+                    f"All investigation findings:\n{all_findings_text[:3000]}"
+                )),
+            ])
+            conclusion_text = synth_response.content.strip()
+        except Exception as exc:
+            _LOG.warning("Conclusion synthesis LLM failed: %s", exc)
+            conclusion_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(raw_conclusions)) if raw_conclusions else "No conclusions drawn."
+    else:
+        conclusion_text = "No conclusions drawn. This analysis did not produce significant findings."
+
     _write_and_run(
         "---\n\n"
         "# Conclusions\n\n"
-        f"{conclusion_items}\n\n"
+        f"{conclusion_text}\n\n"
         "---\n\n"
         "*This analysis was generated automatically by the AgenticEDA agent.*",
         "markdown",

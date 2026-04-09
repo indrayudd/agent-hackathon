@@ -1138,18 +1138,29 @@ async def regenerate_story(session_id: str):
         if files:
             dataset_name = files[0].name
 
-    # Build sections from KG if available (matches original story format)
+    # Build sections from KG + merge with existing story sections.
+    # KG provides the canonical sections, but story.json may have chat investigation
+    # sections that were appended but not yet in the KG. Merge both, dedup by title.
     if kg is not None:
-        sections = kg.get_story_sections()
+        kg_sections = kg.get_story_sections()
         conclusions = kg.get_top_conclusions(5)
     else:
-        # Fallback: use sections from existing story if available
-        sections = old_data.get("sections", [])
+        kg_sections = []
         conclusions = []
-        # Extract findings from agent state
         for f in agent_state.get("findings", []):
             conclusions.append(f.get("finding", ""))
         conclusions = conclusions[:5]
+
+    # Merge: start with KG sections, then append any story.json sections not in KG
+    kg_titles = {s.get("title", "") for s in kg_sections}
+    existing_sections = old_data.get("sections", [])
+    merged_extra = []
+    for sec in existing_sections:
+        if sec.get("superseded"):
+            continue  # Skip superseded sections
+        if sec.get("title", "") not in kg_titles:
+            merged_extra.append(sec)
+    sections = kg_sections + merged_extra
 
     # Attach plot artifacts from notebook
     nb_path = session_dir / "notebook.ipynb"
@@ -1225,7 +1236,7 @@ async def regenerate_story(session_id: str):
         time_col = agent_state.get('time_col', 'N/A')
 
         resp = llm.invoke([
-            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points."),
+            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points. Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters."),
             HumanMessage(content=f"Dataset: {dataset_name}\n{dataset_info}\nColumns: {cols}\nTime column: {time_col}\n\nKnowledge graph:\n{kg_context[:2000]}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
         ])
         narrative = resp.content.strip()
