@@ -49,7 +49,7 @@ def run_agent(
     last_code_cell_id: str | None = None
 
     def _think(content: str):
-        push_event(session_id, {"type": "thinking", "content": content})
+        push_event(session_id, {"type": "thinking", "content": content, "notebook_id": "main"})
         time.sleep(0.02)
 
     def _write_and_run(
@@ -73,11 +73,12 @@ def run_agent(
             "cell_type": cell_type,
             "source": code,
             "overwrite": replacement,
+            "notebook_id": "main",
         })
         time.sleep(0.02)
 
         if cell_type == "markdown":
-            state.register_cell(target_cell_id, "markdown", code)
+            state.register_cell(target_cell_id, "markdown", code, notebook_id="main")
             return target_cell_id, [], None
 
         last_code_cell_id = target_cell_id
@@ -90,15 +91,17 @@ def run_agent(
                 "cell_id": target_cell_id,
                 "error": error,
                 "traceback": [o.get("traceback", []) for o in outputs if o.get("output_type") == "error"],
+                "notebook_id": "main",
             })
         else:
             push_event(session_id, {
                 "type": "cell_output",
                 "cell_id": target_cell_id,
                 "outputs": outputs,
+                "notebook_id": "main",
             })
 
-        state.register_cell(target_cell_id, "code", code, outputs)
+        state.register_cell(target_cell_id, "code", code, outputs, notebook_id="main")
         time.sleep(0.05)
         return target_cell_id, outputs, error
 
@@ -573,6 +576,25 @@ def run_agent(
             "markdown",
         )
 
+        # Write waiting cell in main notebook
+        waiting_cell_id = state.next_cell_id()
+        hyp_list = "\n".join(f"- **{h.title}**" for h in hypotheses)
+        _write_and_run(
+            f"---\n\n### Dispatched {len(hypotheses)} Subagents — Loop {loop_num}\n\n"
+            f"Investigating in parallel:\n{hyp_list}\n\n"
+            f"*Waiting for results...*",
+            "markdown",
+        )
+
+        push_event(session_id, {
+            "type": "subagents_dispatched",
+            "notebook_id": "main",
+            "loop_number": loop_num,
+            "count": len(hypotheses),
+            "hypothesis_ids": [h.id for h in hypotheses],
+            "titles": [h.title for h in hypotheses],
+        })
+
         # Allocate subagent kernels for parallel execution
         sub_kernel_ids = [None] * len(hypotheses)
         if parquet_available:
@@ -675,6 +697,22 @@ def run_agent(
             push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
             break
 
+        # Write compilation summary in main notebook
+        compilation = f"---\n\n### Loop {loop_num} Results — {len(results)} Investigation(s)\n\n"
+        for result in results:
+            conf_pct = int(result.confidence * 100)
+            conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+            compilation += f"**{result.hypothesis_title}** ({conf_label} {conf_pct}%)\n"
+            compilation += f"> {result.finding}\n\n"
+        _write_and_run(compilation, "markdown")
+
+        push_event(session_id, {
+            "type": "subagents_returned",
+            "notebook_id": "main",
+            "loop_number": loop_num,
+            "results_count": len(results),
+        })
+
         # Ingest results into KG
         for result in results:
             nid = kg.add_investigation(
@@ -722,28 +760,6 @@ def run_agent(
             )
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
-
-        # Stop condition: ask LLM if we should continue (skip on last loop)
-        if loop_num < max_loops and results:
-            try:
-                from src.config.config import get_chat_model
-                from langchain_core.messages import SystemMessage, HumanMessage
-                llm_stop = get_chat_model()
-                context = kg.get_context_for_hypothesis_generation()
-                conclusions = kg.get_top_conclusions(10)
-                stop_prompt = (
-                    f"Based on the current knowledge about this dataset:\n\n{context}\n\n"
-                    f"Top conclusions:\n" +
-                    "\n".join(f"- {c}" for c in conclusions) +
-                    "\n\nShould we investigate further or do we have sufficient understanding? "
-                    "Reply CONTINUE or STOP with a one-sentence reason."
-                )
-                resp = llm_stop.invoke([HumanMessage(content=stop_prompt)])
-                if "STOP" in resp.content.upper():
-                    _think(f"Agent decided to stop: {resp.content.strip()}")
-                    break
-            except Exception:
-                pass
 
     # Update cell count from all subagent counters
     if cell_counters:

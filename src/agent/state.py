@@ -56,13 +56,14 @@ class AgentState:
         self.cell_count += 1
         return f"cell_{self.cell_count}"
 
-    def register_cell(self, cell_id: str, cell_type: str, source: str, outputs: list[dict] | None = None):
+    def register_cell(self, cell_id: str, cell_type: str, source: str, outputs: list[dict] | None = None, notebook_id: str = "main"):
         """Record a cell for later notebook serialization."""
         # Overwrite if cell already exists (e.g. after fix/backtrack)
         for entry in self.cell_registry:
             if entry["id"] == cell_id:
                 entry["source"] = source
                 entry["cell_type"] = cell_type
+                entry["notebook_id"] = notebook_id
                 if outputs is not None:
                     entry["outputs"] = outputs
                 return
@@ -71,6 +72,7 @@ class AgentState:
             "cell_type": cell_type,
             "source": source,
             "outputs": outputs or [],
+            "notebook_id": notebook_id,
         })
 
     def summarize(self) -> str:
