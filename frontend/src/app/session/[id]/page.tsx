@@ -116,11 +116,22 @@ export default function SessionPage() {
       const container = findScrollContainer(prev);
       if (container) {
         scrollPositionsRef.current[prev] = container.scrollTop;
+        try { sessionStorage.setItem(`scroll_${sessionId}_${prev}`, String(container.scrollTop)); } catch {}
       }
       return tab;
     });
     useNotebookStore.getState().setActiveTab(tab);
-  }, [findScrollContainer]);
+  }, [findScrollContainer, sessionId]);
+
+  useEffect(() => {
+    // Restore scroll positions from sessionStorage on mount
+    for (const tab of ["notebook", "story", "history"]) {
+      try {
+        const saved = sessionStorage.getItem(`scroll_${sessionId}_${tab}`);
+        if (saved) scrollPositionsRef.current[tab] = parseInt(saved, 10);
+      } catch {}
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -357,33 +368,6 @@ export default function SessionPage() {
                 </div>
               )}
             </div>
-
-            {/* Notebooks */}
-            {cellCount > 0 && (
-              <div className="group mt-4">
-                <button
-                  type="button"
-                  onClick={focusNotebook}
-                  className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
-                >
-                  <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
-                  <span>NOTEBOOKS</span>
-                </button>
-                <div className="ml-4 space-y-0.5 mt-1">
-                  <button
-                    type="button"
-                    onClick={focusNotebook}
-                    className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-container-highest/50 cursor-pointer text-xs text-primary font-medium text-left hover:bg-surface-container-high"
-                  >
-                    <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: '"FILL" 1' }}>description</span>
-                    <span>notebook.ipynb</span>
-                  </button>
-                  <div className="px-2 text-[10px] text-on-surface-variant ml-6">
-                    {cellCount} cells
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* Agents */}
             <div className="group mt-4">

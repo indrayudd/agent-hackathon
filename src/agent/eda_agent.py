@@ -618,15 +618,8 @@ def run_agent(
         cell_counters.extend(loop_cell_counters)
         results: list[InvestigationResult] = []
 
-        # Clear agent tabs for this loop (recycle from previous loop)
-        for i in range(len(hypotheses)):
-            agent_nb_id = f"agent_{i + 1}"
-            push_event(session_id, {
-                "type": "notebook_clear",
-                "notebook_id": agent_nb_id,
-            })
-
         # Dispatch subagents in parallel — don't write hypothesis cells yet
+        # Note: agent tabs accumulate across loops (loop divider provides visual separation)
         actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
         hypothesis_order = []  # Track original order for result writing
         # ThreadPoolExecutor is correct here: subagent work is I/O-bound (kernel IPC + LLM API calls).
@@ -797,6 +790,15 @@ def run_agent(
                     node.metadata["plot_images"] = all_images
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
+
+        # Convergence check: stop if this loop produced no new high-confidence findings
+        new_high_confidence = sum(
+            1 for r in results
+            if r.confidence > 0.5
+        )
+        if loop_num > 1 and new_high_confidence == 0:
+            _think("No new significant findings this loop. Analysis converged.")
+            break
 
         # Cross-investigation reinforcement: if findings overlap on columns, reinforce both
         conclusion_nodes = kg.query_by_type("conclusion")
