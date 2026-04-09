@@ -322,8 +322,8 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
 
             from src.reporting.versioning import create_snapshot
             create_snapshot(session_id, f"Investigation: {hyp.title[:40]}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("Story update/snapshot failed for investigation %s: %s", hyp.title, exc)
 
         push_event(session_id, {
             "type": "chat_investigation_complete",

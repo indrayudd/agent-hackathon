@@ -115,23 +115,44 @@ def interpret_output(output_text: str, phase: str, images: list[str] | None = No
 
         llm = get_chat_model()
 
-        # Build message content — include images if available (vision-capable models)
+        has_images = bool(images)
+        if has_images:
+            _LOG.info("Vision analysis: phase=%s, images=%d", phase, len(images))
+
+        # Build multimodal content
         content_parts: list[dict] = []
         content_parts.append({
             "type": "text",
             "text": f"Phase: {phase}\nOutput:\n{output_text[:1500]}",
         })
         if images:
-            for img_b64 in images[:2]:  # max 2 images to keep token usage reasonable
+            for img_b64 in images[:2]:
                 content_parts.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "low"},
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"},
                 })
 
+        system_prompt = (
+            "Write ONE concise sentence about the key finding from this output. "
+            "If there are plots, describe what visual patterns you see (trends, clusters, outliers, "
+            "distributions, shape). Be specific with numbers. "
+            "Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings."
+        )
+        if has_images:
+            system_prompt += (
+                " For each plot: note the axis ranges, any visible clusters or outliers, "
+                "the shape of distributions, and whether relationships appear linear or non-linear."
+            )
+
         response = llm.invoke([
-            SystemMessage(content="Write ONE concise sentence about the key finding from this output. If there are plots, describe what visual patterns you see (trends, clusters, outliers, distributions). Be specific with numbers. Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings."),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=content_parts),
         ])
-        return response.content.strip()
-    except Exception:
+
+        finding = response.content.strip()
+        if has_images:
+            _LOG.info("Vision finding: %s", finding[:100])
+        return finding
+    except Exception as exc:
+        _LOG.warning("interpret_output failed (phase=%s, images=%s): %s", phase, bool(images), exc)
         return ""
