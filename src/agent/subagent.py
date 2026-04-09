@@ -165,13 +165,14 @@ Rules:
 - Write at most {max_cells} code cells (as a JSON array of code strings)
 - Each cell should be focused on ONE analysis step
 - Use ONLY columns from the available list
-- Include matplotlib plots where relevant (always plt.show())
+- MANDATORY: At least ONE cell MUST produce a matplotlib visualization (scatter, line, bar, histogram, boxplot, heatmap, etc.) that directly supports or refutes the hypothesis. Always call plt.show() after plotting.
 - When a cell makes a plot, also call emit_plot_spec(...) with a hidden
   structured payload that includes chart_family, semantic_intent, axis roles,
   and the data needed to redraw the figure in the report. Do not print it.
 - Print findings clearly with numbers
 - The cells should PROGRESSIVELY build toward answering the hypothesis
 - Include statistical tests where appropriate (scipy.stats, etc.)
+- A good investigation has: (1) data preparation, (2) visualization, (3) statistical test, (4) conclusion print
 
 Respond with JSON (no markdown fencing):
 {{"cells": ["code string 1", "code string 2", ...], "reasoning": "what each cell does"}}"""),
@@ -187,6 +188,30 @@ Respond with JSON (no markdown fencing):
 
         plan = json.loads(text)
         cells_code = plan.get("cells", [])[:max_cells]
+
+        # Ensure at least one cell produces a plot — inject if LLM skipped it
+        has_plot = any("plt.show()" in c or "plt.savefig" in c for c in cells_code)
+        if not has_plot and relevant_cols and len(cells_code) < max_cells:
+            col = relevant_cols[0]
+            if len(relevant_cols) >= 2:
+                col2 = relevant_cols[1]
+                plot_code = (
+                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
+                    f'ax.scatter(df["{col}"].dropna(), df["{col2}"].dropna(), alpha=0.5, s=20)\n'
+                    f'ax.set_xlabel("{col}")\n'
+                    f'ax.set_ylabel("{col2}")\n'
+                    f'ax.set_title("{hypothesis_title}")\n'
+                    f'plt.tight_layout()\nplt.show()'
+                )
+            else:
+                plot_code = (
+                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
+                    f'ax.hist(df["{col}"].dropna(), bins=30, edgecolor="black", alpha=0.7)\n'
+                    f'ax.set_xlabel("{col}")\n'
+                    f'ax.set_title("{hypothesis_title}")\n'
+                    f'plt.tight_layout()\nplt.show()'
+                )
+            cells_code.insert(-1 if cells_code else 0, plot_code)
 
     except Exception as exc:
         _LOG.warning("Subagent plan generation failed: %s", exc)
