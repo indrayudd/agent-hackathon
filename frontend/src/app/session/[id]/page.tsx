@@ -358,33 +358,6 @@ export default function SessionPage() {
               )}
             </div>
 
-            {/* Notebooks */}
-            {cellCount > 0 && (
-              <div className="group mt-4">
-                <button
-                  type="button"
-                  onClick={focusNotebook}
-                  className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
-                >
-                  <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
-                  <span>NOTEBOOKS</span>
-                </button>
-                <div className="ml-4 space-y-0.5 mt-1">
-                  <button
-                    type="button"
-                    onClick={focusNotebook}
-                    className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-container-highest/50 cursor-pointer text-xs text-primary font-medium text-left hover:bg-surface-container-high"
-                  >
-                    <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: '"FILL" 1' }}>description</span>
-                    <span>notebook.ipynb</span>
-                  </button>
-                  <div className="px-2 text-[10px] text-on-surface-variant ml-6">
-                    {cellCount} cells
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* Agents */}
             <div className="group mt-4">
               <button
