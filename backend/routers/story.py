@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import os
+import pathlib
 import re
 import io
 import unicodedata
@@ -650,8 +651,8 @@ def _roman(n: int) -> str:
     return result
 
 
-def _story_to_ieee_html(story_data: dict) -> str:
-    """Convert story data to IEEE-style HTML for PDF rendering."""
+def _story_to_ieee_html_legacy(story_data: dict) -> str:
+    """Convert story data to IEEE-style HTML for PDF rendering (legacy, uses column-count)."""
     title = story_data.get("title", "EDA Report")
     summary = story_data.get("executive_summary", "")
     sections = story_data.get("sections", [])
@@ -883,15 +884,186 @@ def _story_pdf_filename(story: dict) -> str:
 
 
 def _export_story_pdf(story: dict) -> bytes:
-    """Export story as IEEE-style PDF, using WeasyPrint when available and a local fallback otherwise."""
-    try:
-        import weasyprint
+    """Export story as IEEE-style PDF using LaTeX (tectonic) with the IEEEtran template."""
+    import base64
+    import shutil
+    import subprocess
+    import tempfile
 
-        html_content = _story_to_ieee_html(story)
-        return weasyprint.HTML(string=html_content).write_pdf()
-    except Exception as exc:
-        _LOG.warning("Story PDF render fell back to built-in PDF writer: %s", exc)
-        return _build_minimal_pdf(story)
+    TECTONIC = "/tmp/tectonic"
+    IEEE_CLS = pathlib.Path(__file__).resolve().parents[2] / "ieee_template"
+
+    temp_dir = tempfile.mkdtemp(prefix="eda_pdf_")
+    try:
+        # Copy IEEEtran.cls if the ieee_template dir has one; tectonic auto-downloads it otherwise
+        for f in IEEE_CLS.glob("*.cls"):
+            shutil.copy(f, temp_dir)
+
+        # Save plot images as PNG files
+        fig_counter = 0
+        fig_paths: dict[int, str] = {}
+        for section in story.get("sections", []):
+            for plot in section.get("plots", []):
+                fig_counter += 1
+                source = plot.get("source", "")
+                if not source or not isinstance(source, str):
+                    continue
+                if source.startswith("data:image"):
+                    source = source.split(",", 1)[-1]
+                try:
+                    img_bytes = base64.b64decode(source)
+                    img_path = os.path.join(temp_dir, f"fig{fig_counter}.png")
+                    with open(img_path, "wb") as fh:
+                        fh.write(img_bytes)
+                    fig_paths[fig_counter] = f"fig{fig_counter}.png"
+                except Exception:
+                    pass
+
+        # Build LaTeX document
+        tex = _build_ieee_latex(story, fig_paths)
+        tex_path = os.path.join(temp_dir, "report.tex")
+        with open(tex_path, "w", encoding="utf-8") as fh:
+            fh.write(tex)
+
+        # Compile with tectonic
+        result = subprocess.run(
+            [TECTONIC, "--chatter", "minimal", tex_path],
+            cwd=temp_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        pdf_path = os.path.join(temp_dir, "report.pdf")
+        if os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as fh:
+                return fh.read()
+
+        _LOG.warning("tectonic failed: %s\n%s", result.stdout, result.stderr)
+        # Fallback to WeasyPrint
+        try:
+            import weasyprint
+            html_content = _story_to_ieee_html(story)
+            return weasyprint.HTML(string=html_content).write_pdf()
+        except Exception:
+            return _build_minimal_pdf(story)
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _tex_esc(text: str) -> str:
+    """Escape special LaTeX characters."""
+    if not text:
+        return ""
+    # Strip markdown formatting first
+    text = text.replace("**", "").replace("*", "")
+    # Escape LaTeX specials
+    replacements = [
+        ("\\", "\\textbackslash{}"),
+        ("&", "\\&"),
+        ("%", "\\%"),
+        ("$", "\\$"),
+        ("#", "\\#"),
+        ("_", "\\_"),
+        ("{", "\\{"),
+        ("}", "\\}"),
+        ("~", "\\textasciitilde{}"),
+        ("^", "\\textasciicircum{}"),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
+def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:
+    """Generate IEEE conference paper LaTeX from story data."""
+    title = story.get("title", "EDA Report")
+    summary = story.get("executive_summary", "")
+    sections = story.get("sections", [])
+    generated_at = story.get("generated_at", "")
+    date_str = generated_at[:10] if generated_at else ""
+
+    # Build section bodies
+    sec_tex = ""
+    fig_counter = 0
+    for i, section in enumerate(sections):
+        sec_title = section.get("title", f"Section {i+1}")
+        content = section.get("content", "")
+
+        # Convert content lines
+        body_lines = []
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("- "):
+                body_lines.append(f"\\item {_tex_esc(line[2:])}")
+            else:
+                body_lines.append(_tex_esc(line))
+
+        body_tex = ""
+        in_itemize = False
+        for bl in body_lines:
+            if bl.startswith("\\item "):
+                if not in_itemize:
+                    body_tex += "\\begin{itemize}\n"
+                    in_itemize = True
+                body_tex += f"  {bl}\n"
+            else:
+                if in_itemize:
+                    body_tex += "\\end{itemize}\n"
+                    in_itemize = False
+                body_tex += f"{bl}\n\n"
+        if in_itemize:
+            body_tex += "\\end{itemize}\n"
+
+        # Figures
+        figs_tex = ""
+        for plot in section.get("plots", []):
+            fig_counter += 1
+            caption = plot.get("caption", plot.get("title", f"Figure {fig_counter}"))
+            if fig_counter in fig_paths:
+                figs_tex += f"""
+\\begin{{figure}}[htbp]
+\\centerline{{\\includegraphics[width=0.95\\columnwidth]{{{fig_paths[fig_counter]}}}}}
+\\caption{{{_tex_esc(str(caption))}}}
+\\label{{fig{fig_counter}}}
+\\end{{figure}}
+"""
+
+        sec_tex += f"\\section{{{_tex_esc(sec_title)}}}\n{body_tex}\n{figs_tex}\n"
+
+    return f"""\\documentclass[conference]{{IEEEtran}}
+\\usepackage{{graphicx}}
+\\usepackage{{textcomp}}
+\\usepackage{{xcolor}}
+\\usepackage[utf8]{{inputenc}}
+
+\\begin{{document}}
+
+\\title{{{_tex_esc(title)}}}
+
+\\author{{\\IEEEauthorblockN{{AgenticEDA}}
+\\IEEEauthorblockA{{Automated Exploratory Data Analysis\\\\
+Generated: {_tex_esc(date_str)}}}}}
+
+\\maketitle
+
+\\begin{{abstract}}
+{_tex_esc(summary[:3000])}
+\\end{{abstract}}
+
+\\begin{{IEEEkeywords}}
+exploratory data analysis, automated EDA, machine learning, data science
+\\end{{IEEEkeywords}}
+
+{sec_tex}
+
+\\section*{{Acknowledgment}}
+This report was automatically generated by AgenticEDA.
+
+\\end{{document}}
+"""
 
 
 @router.get("/story/{session_id}")
