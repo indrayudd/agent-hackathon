@@ -86,6 +86,8 @@ export default function SessionPage() {
   const scrollPositionsRef = useRef<Record<string, number>>({});
   const cellCount = useNotebookStore((s) => s.cells.length);
   const hypothesisGroups = useNotebookStore((s) => s.hypothesisGroups);
+  const activeNotebookId = useNotebookStore((s) => s.activeNotebookId);
+  const notebooks = useNotebookStore((s) => s.notebooks);
   const activityLog = useNotebookStore((s) => s.activityLog);
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
   const currentPhase = useNotebookStore((s) => s.currentPhase);
@@ -383,32 +385,72 @@ export default function SessionPage() {
               </div>
             )}
 
-            {/* Hypothesis Groups */}
-            {hypothesisGroups.length > 0 && (
-              <div className="group mt-4">
+            {/* Agents */}
+            <div className="group mt-4">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+                <span>AGENTS</span>
+              </button>
+              <div className="ml-4 space-y-0.5 mt-1">
+                {/* Main notebook */}
                 <button
                   type="button"
-                  onClick={focusNotebook}
-                  className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container text-left text-xs font-semibold text-on-surface"
+                  className={`flex w-full items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-xs text-left transition-colors ${
+                    activeNotebookId === "main"
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-on-surface-variant hover:bg-surface-container-high"
+                  }`}
+                  onClick={() => {
+                    useNotebookStore.getState().setActiveNotebook("main");
+                    useNotebookStore.getState().setActiveTab("notebook");
+                    setActiveTab("notebook");
+                  }}
                 >
-                  <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
-                  <span>INVESTIGATIONS</span>
+                  <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: '"FILL" 1' }}>description</span>
+                  <span>Main</span>
                 </button>
-                <div className="ml-4 space-y-0.5 mt-1">
-                  {hypothesisGroups.map((g) => (
+                {/* Agent notebooks */}
+                {hypothesisGroups.map((g) => {
+                  const nb = notebooks[g.id];
+                  const agentMatch = g.id.match(/^agent_(\d+)$/);
+                  const label = agentMatch ? `Agent ${agentMatch[1]}` : g.id;
+                  const status = nb?.status || "idle";
+                  return (
                     <button
                       key={g.id}
                       type="button"
-                      onClick={() => focusInvestigation(g.id)}
-                      className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer text-xs text-on-surface-variant text-left"
+                      className={`flex w-full items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-xs text-left transition-colors ${
+                        activeNotebookId === g.id
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-on-surface-variant hover:bg-surface-container-high"
+                      }`}
+                      onClick={() => {
+                        useNotebookStore.getState().setActiveNotebook(g.id);
+                        useNotebookStore.getState().setActiveTab("notebook");
+                        setActiveTab("notebook");
+                      }}
                     >
                       <span className="material-symbols-outlined text-[16px] text-primary">science</span>
-                      <span className="truncate">{g.title}</span>
+                      <div className="flex flex-col min-w-0">
+                        <span className="truncate">{label}</span>
+                        {nb?.title && (
+                          <span className="truncate text-[10px] text-on-surface-variant opacity-70">{nb.title}</span>
+                        )}
+                      </div>
+                      {status === "running" && (
+                        <span className="material-symbols-outlined ml-auto text-primary" style={{ fontSize: "14px" }}>schedule</span>
+                      )}
+                      {status === "complete" && (
+                        <span className="material-symbols-outlined ml-auto text-green-600" style={{ fontSize: "14px" }}>check_circle</span>
+                      )}
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            )}
+            </div>
 
             {/* Agent Activity */}
             <AgentActivityBadge />
