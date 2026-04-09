@@ -1108,81 +1108,101 @@ async def regenerate_story(session_id: str):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Load existing KG if available
+    # Load existing KG
     from src.agent.knowledge_graph import KnowledgeGraph
     kg = None
-    existing_story = session_dir / "story.json"
-    if existing_story.exists():
+    existing_story_path = session_dir / "story.json"
+    old_data = {}
+    if existing_story_path.exists():
         try:
-            old_data = json.loads(existing_story.read_text())
+            old_data = json.loads(existing_story_path.read_text())
             if "knowledge_graph" in old_data:
                 kg = KnowledgeGraph.from_dict(old_data["knowledge_graph"])
+        except Exception as exc:
+            _LOG.warning("Failed to load KG for regeneration: %s", exc)
+
+    # Load agent state
+    state_path = session_dir / "agent_state.json"
+    agent_state = {}
+    if state_path.exists():
+        try:
+            agent_state = json.loads(state_path.read_text())
         except Exception:
             pass
 
+    # Find dataset name
+    uploads_dir = session_dir / "uploads"
+    dataset_name = "dataset"
+    if uploads_dir.is_dir():
+        files = list(uploads_dir.iterdir())
+        if files:
+            dataset_name = files[0].name
+
+    # Build sections from KG if available (matches original story format)
+    if kg is not None:
+        sections = kg.get_story_sections()
+        conclusions = kg.get_top_conclusions(5)
+    else:
+        # Fallback: use sections from existing story if available
+        sections = old_data.get("sections", [])
+        conclusions = []
+        # Extract findings from agent state
+        for f in agent_state.get("findings", []):
+            conclusions.append(f.get("finding", ""))
+        conclusions = conclusions[:5]
+
+    # Attach plot artifacts from notebook
     nb_path = session_dir / "notebook.ipynb"
-    if not nb_path.exists():
-        raise HTTPException(status_code=404, detail="Notebook not found")
+    if nb_path.exists():
+        try:
+            nb = nbformat.read(str(nb_path), as_version=4)
+            cell_map = {}
+            for cell in nb.cells:
+                cell_id = cell.get("id")
+                if cell_id:
+                    cell_map[str(cell_id)] = cell
 
-    # Read notebook cells
-    nb = nbformat.read(str(nb_path), as_version=4)
-    code_cells = [c for c in nb.cells if c.cell_type == "code"]
-    md_cells = [c for c in nb.cells if c.cell_type == "markdown"]
-    plot_specs_map = plot_specs_by_cell(session_dir)
+            plot_specs_map = plot_specs_by_cell(session_dir)
 
-    # Build sections from markdown headings and their following code cells
-    sections: list[dict] = []
-    current_section: dict | None = None
-    for cell in nb.cells:
-        if cell.cell_type == "markdown":
-            # Start a new section from markdown
-            heading = cell.source.split("\n")[0].lstrip("#").strip() or "Section"
-            current_section = {
-                "phase": heading,
-                "title": heading,
-                "content": cell.source,
-                "cell_ids": [],
-                "plot_cell_ids": [],
-                "plots": [],
-                "insights": [],
-            }
-            sections.append(current_section)
-        elif cell.cell_type == "code" and current_section is not None:
-            # Attach code cell outputs as context
-            cell_id = cell.get("id", "")
-            current_section["cell_ids"].append(cell_id)
-            # Extract text outputs for summary
-            outputs = cell.get("outputs", [])
-            for output in outputs:
-                text = output.get("text", "")
-                if not text and "data" in output:
-                    text = output["data"].get("text/plain", "")
-                if text:
-                    current_section["content"] += f"\n\nOutput:\n{text[:300]}"
+            for section in sections:
+                plot_cell_ids = section.get("plot_cell_ids") or section.get("cell_ids") or []
+                plots: list[dict] = []
+                for cell_id in plot_cell_ids:
+                    cell = cell_map.get(str(cell_id))
+                    if not cell:
+                        continue
+                    plots.extend(
+                        plot_artifacts_from_outputs(
+                            cell.get("outputs", []) or [],
+                            title=section.get("title", ""),
+                            caption=section.get("visual_caption", ""),
+                            source_cell_id=str(cell_id),
+                            plot_specs=plot_specs_map.get(str(cell_id), []),
+                        )
+                    )
 
-            output_artifacts = plot_artifacts_from_outputs(
-                outputs,
-                title=current_section.get("title", ""),
-                caption=current_section.get("visual_caption", ""),
-                source_cell_id=cell_id,
-                plot_specs=plot_specs_map.get(cell_id, []),
-            )
-            if output_artifacts:
-                if cell_id not in current_section["plot_cell_ids"]:
-                    current_section["plot_cell_ids"].append(cell_id)
-                current_section["plots"].extend(output_artifacts)
+                # Fallback for investigation plots from KG metadata
+                if not plots and section.get("type") == "investigation" and kg:
+                    kg_data = kg.to_dict()
+                    for nid_key, node_data in kg_data.get("nodes", {}).items():
+                        if (node_data.get("type") == "conclusion" and
+                            node_data.get("phase", "").replace("Investigation: ", "") == section.get("title", "")):
+                            plot_images = node_data.get("metadata", {}).get("plot_images", [])
+                            for pi in plot_images:
+                                plots.append({
+                                    "kind": "image",
+                                    "mime_type": "image/png",
+                                    "source": pi["image_png"],
+                                    "title": section.get("title", ""),
+                                    "caption": f"Investigation: {section.get('title', '')}",
+                                    "source_cell_id": pi.get("cell_id", ""),
+                                })
+                            break
 
-    if not sections:
-        # Fallback: one section per code cell
-        for i, cell in enumerate(code_cells):
-            sections.append({
-                "phase": f"Cell {i+1}",
-                "title": f"Analysis {i+1}",
-                "content": cell.source[:200],
-                "cell_ids": [],
-                "plot_cell_ids": [],
-                "plots": [],
-            })
+                if plots:
+                    section["plots"] = plots
+        except Exception as exc:
+            _LOG.warning("Plot extraction during regeneration failed: %s", exc)
 
     # Generate executive summary via LLM
     narrative = ""
@@ -1191,35 +1211,29 @@ async def regenerate_story(session_id: str):
         from langchain_core.messages import SystemMessage, HumanMessage
         llm = get_chat_model()
 
-        # Gather all section content for the LLM
-        all_content = "\n\n".join(
-            f"## {s['title']}\n{s['content'][:500]}" for s in sections
+        conclusions_text = "\n".join(f"- {c}" for c in conclusions)
+        findings_text = "\n".join(
+            f"- [{f.get('phase', '')}] {f.get('finding', '')}"
+            for f in agent_state.get("findings", [])
         )
+        kg_context = ""
+        if kg:
+            kg_context = kg.get_context_for_hypothesis_generation()
 
-        # Load agent state for dataset info if available
-        state_path = session_dir / "agent_state.json"
-        dataset_info = ""
-        if state_path.exists():
-            agent_state = json.loads(state_path.read_text())
-            dataset_info = f"Dataset: {agent_state.get('row_count', '?')} rows x {agent_state.get('col_count', '?')} cols\nColumns: {', '.join(agent_state.get('numeric_cols', [])[:15])}\nTime column: {agent_state.get('time_col', 'N/A')}"
-
-        # Find dataset filename
-        uploads_dir = session_dir / "uploads"
-        dataset_name = "dataset"
-        if uploads_dir.is_dir():
-            files = list(uploads_dir.iterdir())
-            if files:
-                dataset_name = files[0].name
+        dataset_info = f"{agent_state.get('row_count', '?')} rows x {agent_state.get('col_count', '?')} cols"
+        cols = ', '.join(agent_state.get('numeric_cols', [])[:15])
+        time_col = agent_state.get('time_col', 'N/A')
 
         resp = llm.invoke([
-            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, and recommended next steps. Be specific with numbers. Do NOT use bullet points."),
-            HumanMessage(content=f"Dataset: {dataset_name}\n{dataset_info}\n\nNotebook sections:\n{all_content[:4000]}"),
+            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points."),
+            HumanMessage(content=f"Dataset: {dataset_name}\n{dataset_info}\nColumns: {cols}\nTime column: {time_col}\n\nKnowledge graph:\n{kg_context[:2000]}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
         ])
         narrative = resp.content.strip()
     except Exception as exc:
         _LOG.warning("LLM narrative regeneration failed: %s", exc)
-        # Fallback: concatenate section titles
-        narrative = "Key findings: " + "; ".join(s["title"] for s in sections[:10])
+        narrative = old_data.get("executive_summary", "")
+        if not narrative:
+            narrative = "Key findings: " + "; ".join(s.get("title", "") for s in sections[:10])
 
     story_data = {
         "title": f"EDA Report: {dataset_name}",
@@ -1234,6 +1248,6 @@ async def regenerate_story(session_id: str):
     story_path = session_dir / "story.json"
     story_path.write_text(json.dumps(story_data, default=str, indent=2))
 
-    _LOG.info("Story regenerated for session %s: %d sections", session_id, len(sections))
+    _LOG.info("Story regenerated for session %s: %d sections, kg=%s", session_id, len(sections), kg is not None)
 
     return story_data
