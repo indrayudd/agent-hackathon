@@ -144,33 +144,42 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const [changesDetected, setChangesDetected] = useState(false);
 
   const notebooks = useNotebookStore((s) => s.notebooks);
-  // Count ALL cells across all notebooks (main + agents + chat investigations)
-  const totalCellCount = cells.length + Object.values(notebooks).reduce(
-    (sum, nb) => sum + (nb.id === "main" ? 0 : nb.cells.length), 0
-  );
+  // Compute a simple hash of all cell sources across all notebooks
+  const contentHash = useMemo(() => {
+    let hash = 0;
+    const allCells = [...cells];
+    for (const nb of Object.values(notebooks)) {
+      if (nb.id !== "main") allCells.push(...nb.cells);
+    }
+    for (const cell of allCells) {
+      for (let i = 0; i < cell.source.length; i++) {
+        hash = ((hash << 5) - hash + cell.source.charCodeAt(i)) | 0;
+      }
+    }
+    return hash;
+  }, [cells, notebooks]);
+
   const storyGeneratedAt = generatedAt;
 
-  // Detect changes: only flag when cells change AFTER pipeline completes and stabilizes
-  const baselineCellCountRef = useRef<number | null>(null);
+  const baselineHashRef = useRef<number | null>(null);
   const baselineSetRef = useRef(false);
 
   useEffect(() => {
-    // Set baseline when pipeline finishes (not on story load — cells may still be streaming)
-    if (!pipelineRunning && storyGeneratedAt && !baselineSetRef.current && totalCellCount > 0) {
-      // Delay baseline to let final events settle
+    // Set baseline when pipeline finishes
+    if (!pipelineRunning && storyGeneratedAt && !baselineSetRef.current && contentHash !== 0) {
       const timer = setTimeout(() => {
-        baselineCellCountRef.current = totalCellCount;
+        baselineHashRef.current = contentHash;
         baselineSetRef.current = true;
       }, 3000);
       return () => clearTimeout(timer);
     }
-    // Only detect changes after baseline is set and pipeline is not running
-    if (baselineSetRef.current && !pipelineRunning && baselineCellCountRef.current !== null) {
-      if (totalCellCount !== baselineCellCountRef.current) {
+    // Detect changes after baseline
+    if (baselineSetRef.current && !pipelineRunning && baselineHashRef.current !== null) {
+      if (contentHash !== baselineHashRef.current) {
         setChangesDetected(true);
       }
     }
-  }, [totalCellCount, storyGeneratedAt, pipelineRunning]);
+  }, [contentHash, storyGeneratedAt, pipelineRunning]);
 
   useEffect(() => {
     if (!title && !loading && !pipelineRunning) {

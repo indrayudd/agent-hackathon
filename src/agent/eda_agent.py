@@ -660,6 +660,7 @@ def run_agent(
                     max_cells=4,
                     kernel_id=kid,
                     notebook_id=notebook_id,
+                    kg_context=kg.get_context_for_hypothesis_generation() if kg else "",
                 )
                 futures[future] = (hyp, notebook_id)
 
@@ -763,11 +764,12 @@ def run_agent(
             # Vision analysis of subagent plots
             for cell_id, images in getattr(result, 'images', {}).items():
                 if images:
+                    _think(f"Analyzing {len(images)} plot(s) from {result.hypothesis_title}...")
                     try:
                         visual_finding = interpret_output(
                             f"Plot from hypothesis: {result.hypothesis_title}",
                             f"Investigation: {result.hypothesis_title}",
-                            images=images[:2],
+                            images=images,
                         )
                         if visual_finding:
                             vis_id = kg.add_fact(

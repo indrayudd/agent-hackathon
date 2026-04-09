@@ -319,6 +319,15 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
     # Create a dedicated notebook for this chat investigation
     chat_notebook_id = f"chat_{int(time.time())}"
 
+    # Write investigation start to main notebook
+    push_event(session_id, {
+        "type": "cell_write",
+        "cell_id": f"chat_main_{int(time.time())}",
+        "cell_type": "markdown",
+        "source": f"---\n\n### Chat Investigation: {hyp.title}\n\n> {hyp.description}\n\n*Spawning investigation subagent...*",
+        "notebook_id": "main",
+    })
+
     push_event(session_id, {
         "type": "subagent_start",
         "hypothesis_id": hyp.id,
@@ -358,6 +367,7 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             cell_counter=cell_counter,
             max_cells=5,
             notebook_id=chat_notebook_id,
+            kg_context=kg.get_context_for_hypothesis_generation() if kg else "",
         )
 
         # Write conclusion cell to the chat notebook
@@ -369,6 +379,41 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             "cell_type": "markdown",
             "source": f"### Conclusion\n\n{result.finding}\n\n**Confidence:** {conf_label} ({conf_pct}%)",
             "notebook_id": chat_notebook_id,
+        })
+
+        # Add investigation result to KG
+        kg = _session_kgs.get(session_id)
+        if kg is not None:
+            from src.agent.knowledge_graph import KGEdge
+            nid = kg.add_investigation(
+                hypothesis_id=hyp.id,
+                hypothesis_title=hyp.title,
+                finding=result.finding,
+                evidence_cells=result.cell_ids,
+                plot_cells=result.plot_cell_ids,
+                confidence=result.confidence,
+                sub_findings=result.sub_findings,
+                columns=getattr(result, 'relevant_cols', []) or [],
+                analysis_type="chat_investigation",
+            )
+            # Store plot images in KG metadata
+            all_images = []
+            for cid, imgs in getattr(result, 'images', {}).items():
+                for img in imgs:
+                    all_images.append({"cell_id": cid, "image_png": img})
+            if all_images:
+                node = kg.nodes.get(nid)
+                if node:
+                    node.metadata["plot_images"] = all_images
+            _LOG.info("Chat investigation added to KG: %s (confidence=%.2f)", hyp.title, result.confidence)
+
+        # Write compilation to main notebook
+        push_event(session_id, {
+            "type": "cell_write",
+            "cell_id": f"chat_result_{int(time.time())}",
+            "cell_type": "markdown",
+            "source": f"**Chat Investigation Result: {hyp.title}**\n\n{result.finding}\n\n*Confidence: {conf_label} ({conf_pct}%)*",
+            "notebook_id": "main",
         })
 
         # Update story with new investigation
