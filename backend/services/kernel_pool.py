@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import pathlib
 import threading
 
 from backend.services.kernel_manager import (
     get_or_create_kernel,
     execute_code,
     shutdown_kernel,
+    SESSIONS_DIR,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -29,10 +32,19 @@ class KernelPoolManager:
 
     def allocate_subagent_kernels(self, session_id: str, n: int) -> list[str]:
         kernel_ids = []
+        # Ensure sub-kernel session dirs exist (symlink to parent uploads)
+        parent_uploads = SESSIONS_DIR / session_id / "uploads"
         with self._lock:
             self._sub_kernels.setdefault(session_id, [])
         for i in range(n):
             kid = f"{session_id}_sub_{i}"
+            sub_dir = SESSIONS_DIR / kid / "uploads"
+            if not sub_dir.exists():
+                sub_dir.parent.mkdir(parents=True, exist_ok=True)
+                if parent_uploads.exists():
+                    os.symlink(str(parent_uploads), str(sub_dir))
+                else:
+                    sub_dir.mkdir(parents=True, exist_ok=True)
             get_or_create_kernel(kid)
             with self._lock:
                 self._sub_kernels[session_id].append(kid)
@@ -65,6 +77,11 @@ class KernelPoolManager:
                 _LOG.info("Shutdown subagent kernel: %s", kid)
             except Exception as exc:
                 _LOG.warning("Failed to shutdown %s: %s", kid, exc)
+            # Clean up sub-kernel session directory
+            import shutil
+            sub_dir = SESSIONS_DIR / kid
+            if sub_dir.exists():
+                shutil.rmtree(sub_dir, ignore_errors=True)
 
     def shutdown_all(self, session_id: str) -> None:
         self.shutdown_subagent_kernels(session_id)

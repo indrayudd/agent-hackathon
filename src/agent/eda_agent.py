@@ -677,10 +677,6 @@ def run_agent(
 
         # Ingest results into KG
         for result in results:
-            inv_metadata = {
-                "columns": getattr(result, 'relevant_cols', []) or [],
-                "analysis_type": "hypothesis_investigation",
-            }
             nid = kg.add_investigation(
                 hypothesis_id=result.hypothesis_id,
                 hypothesis_title=result.hypothesis_title,
@@ -689,7 +685,8 @@ def run_agent(
                 plot_cells=result.plot_cell_ids,
                 confidence=result.confidence,
                 sub_findings=result.sub_findings,
-                metadata=inv_metadata,
+                columns=getattr(result, 'relevant_cols', []) or [],
+                analysis_type="hypothesis_investigation",
                 loop_number=loop_num,
             )
             state.add_finding(f"Investigation: {result.hypothesis_title}", result.finding)
