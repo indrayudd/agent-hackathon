@@ -237,20 +237,25 @@ Respond with JSON (no markdown fencing):
 
     # --- Execute investigation cells ---
     all_outputs = []
+    running_context = []  # Accumulate cell results for adaptive context
     for i, code in enumerate(cells_code):
         push_event(session_id, {
             "type": "thinking",
-            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
+            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}" + (
+                f" (previous: {running_context[-1][:80]}...)" if running_context else ""
+            ),
             "notebook_id": notebook_id,
         })
         failed_cell_id, outputs, error = _write_and_execute(code)
         if not error:
             all_outputs.append(_extract_text(outputs))
+            running_context.append(f"Cell {i+1} output:\n{_extract_text(outputs)[:500]}")
         else:
             # Try to fix the error once
             try:
+                context_str = "\n".join(running_context[-3:]) if running_context else "No previous outputs."
                 fix_response = llm.invoke([
-                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Respond with ONLY the corrected code, no explanation."),
+                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Previous cell outputs:\n{context_str}\n\nRespond with ONLY the corrected code, no explanation."),
                     HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
                 ])
                 fixed_code = fix_response.content.strip()
@@ -274,24 +279,73 @@ Respond with JSON (no markdown fencing):
             except Exception:
                 pass
 
-    # --- Synthesize conclusion ---
+    # --- Synthesize conclusion with vision ---
     combined_output = "\n---\n".join(all_outputs[:5])
     try:
+        from src.config.config import get_chat_model
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        llm = get_chat_model()
+
+        # Build multimodal content with text + plot images
+        content_parts = [
+            {"type": "text", "text": (
+                f"Hypothesis: {hypothesis_title}\n\n"
+                f"Evidence from {len(all_outputs)} analysis steps:\n{combined_output[:3000]}"
+            )}
+        ]
+        # Add up to 3 plot images for vision analysis
+        img_count = 0
+        for cell_id, imgs in result.images.items():
+            for img_b64 in imgs:
+                if img_count >= 3:
+                    break
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"},
+                })
+                img_count += 1
+            if img_count >= 3:
+                break
+
         conclusion_response = llm.invoke([
-            SystemMessage(content="You are concluding a data investigation. Write ONE specific, quantitative sentence about what was found. Include numbers. If the hypothesis was confirmed, say so. If refuted, say so."),
-            HumanMessage(content=f"Hypothesis: {hypothesis_title}\n\nEvidence from {len(all_outputs)} analysis steps:\n{combined_output[:3000]}"),
+            SystemMessage(content=(
+                "You are concluding a data investigation. Based on the text evidence AND any plots shown, "
+                "write ONE specific, quantitative sentence about what was found. Include numbers. "
+                "If the hypothesis was confirmed, say so with evidence. If refuted, say so. "
+                "If plots are shown, reference what you see in them."
+            )),
+            HumanMessage(content=content_parts),
         ])
         result.finding = conclusion_response.content.strip()
 
-        # Estimate confidence based on how much evidence we gathered
-        result.confidence = min(0.95, 0.3 + 0.15 * len(all_outputs))
+        # Extract p-values from outputs for confidence scoring
+        from src.agent.knowledge_graph import compute_finding_confidence, extract_p_values
+        all_text = combined_output
+        p_vals = extract_p_values(all_text)
+        min_p = min(p_vals) if p_vals else None
 
-    except Exception:
+        # Try to extract sample size
+        import re
+        n_match = re.search(r'(?:n|N|rows|observations)\s*[=:]\s*([0-9,]+)', all_text)
+        sample_n = int(n_match.group(1).replace(',', '')) if n_match else 100
+
+        result.confidence = compute_finding_confidence(
+            has_p_value=bool(p_vals),
+            p_value=min_p,
+            sample_size=sample_n,
+            num_evidence_lines=len(all_outputs),
+            has_visual_confirmation=img_count > 0,
+            confirmed_by_multiple_methods=len(p_vals) > 1,
+        )
+
+    except Exception as exc:
+        _LOG.warning("Conclusion synthesis failed: %s", exc)
         if all_outputs:
             result.finding = f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps."
         else:
             result.finding = f"Could not investigate '{hypothesis_title}' due to errors."
-        result.confidence = 0.3
+        result.confidence = 0.15
 
     _LOG.info("Subagent %s complete: %s (confidence=%.2f)",
               hypothesis_id, result.finding[:80], result.confidence)

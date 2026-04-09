@@ -21,7 +21,7 @@ class ChatContext:
     def get_state_value(self, key: str) -> Any:
         return self.state.get(key)
 
-    def get_summary(self) -> str:
+    def get_summary(self, question: str | None = None) -> str:
         """Build a context string the LLM can use to answer questions."""
         parts = []
 
@@ -48,6 +48,14 @@ class ChatContext:
                 parts.append("Key findings:")
                 for c in conclusions:
                     parts.append(f"  - {c}")
+            # Add KG context relevant to the question
+            if question:
+                try:
+                    kg_context = self.kg.get_context_for_hypothesis_generation()
+                    if kg_context:
+                        parts.append(f"Knowledge graph context:\n{kg_context[:1500]}")
+                except Exception:
+                    pass
         else:
             findings = self.state.get("findings") or self.state.get("insights") or []
             if findings:
@@ -66,14 +74,14 @@ class ChatContext:
         return "\n".join(parts) if parts else "No analysis results available yet."
 
 
-def build_chat_agent(session_id: str, state: dict | None = None):
+def build_chat_agent(session_id: str, state: dict | None = None, kg=None):
     """
     Build a chat agent for a session.
 
     Tries to use the configured LLM first. Falls back to a deterministic
     responder if no API key is available.
     """
-    context = ChatContext(session_id, state)
+    context = ChatContext(session_id, state, kg=kg)
 
     # Try to build an LLM-powered agent
     llm = _try_get_llm()
@@ -158,7 +166,7 @@ def _try_get_llm():
 
 def _llm_respond(llm, context: ChatContext, user_message: str) -> str:
     """Use the LLM to respond, with EDA context in the system prompt."""
-    summary = context.get_summary()
+    summary = context.get_summary(question=user_message)
 
     cols = context.state.get("columns", context.state.get("numeric_cols", []))
     col_list = ", ".join(f'"{c}"' for c in cols) if cols else "unknown"

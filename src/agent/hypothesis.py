@@ -247,5 +247,6 @@ If the question is NOT a hypothesis (just a chat question), respond with: {{"id"
             relevant_cols=data.get("relevant_cols", []),
             eda_rules=data.get("eda_rules", []),
         )
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("hypothesis_from_user_question failed: %s", exc)
         return None

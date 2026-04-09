@@ -313,8 +313,8 @@ def run_agent(
                         try:
                             import ast
                             state.columns = ast.literal_eval(col_text.strip())
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _LOG.warning("Column name parsing failed: %s", exc)
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "inspect_dtypes":
@@ -606,8 +606,8 @@ def run_agent(
                 _LOG.warning("Kernel allocation/preamble failed: %s — falling back to main kernel", exc)
                 try:
                     pool.shutdown_subagent_kernels(session_id)
-                except Exception:
-                    pass
+                except Exception as exc2:
+                    _LOG.warning("Kernel pool cleanup failed: %s", exc2)
                 sub_kernel_ids = [None] * len(hypotheses)
         else:
             _think("Using main kernel for investigations (no parquet checkpoint).")
@@ -699,8 +699,8 @@ def run_agent(
         # Shutdown subagent kernels after this loop
         try:
             pool.shutdown_subagent_kernels(session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("Subagent kernel shutdown failed: %s", exc)
 
         if not results:
             _think(f"Loop {loop_num}: all investigations failed. Stopping.")
@@ -783,8 +783,8 @@ def run_agent(
                             )
                             kg.nodes[vis_id].type = "visual_insight"
                             kg.add_edge(KGEdge(source_id=vis_id, target_id=nid, type="supports"))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOG.warning("Vision analysis failed for hypothesis %s: %s", result.hypothesis_title, exc)
 
             # Store raw plot images in KG metadata for story generation
             all_images = []
@@ -797,6 +797,18 @@ def run_agent(
                     node.metadata["plot_images"] = all_images
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
+
+        # Cross-investigation reinforcement: if findings overlap on columns, reinforce both
+        conclusion_nodes = kg.query_by_type("conclusion")
+        for i, n1 in enumerate(conclusion_nodes):
+            n1_cols = set(c.lower() for c in n1.metadata.get("columns", []))
+            if not n1_cols:
+                continue
+            for n2 in conclusion_nodes[i+1:]:
+                n2_cols = set(c.lower() for c in n2.metadata.get("columns", []))
+                if n1_cols & n2_cols:  # Shared columns
+                    kg.reinforce(n1.id)
+                    kg.reinforce(n2.id)
 
     # Update cell count from all subagent counters
     if cell_counters:
