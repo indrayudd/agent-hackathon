@@ -20,6 +20,7 @@ export interface ActivityLogEntry {
   cellId?: string;
   cellType?: "code" | "markdown";
   hypothesisId?: string;
+  notebookId?: string;
   chatAction?: string; // "new_cell" | "edit_cell" | "delete_cells" | "reorder_cell"
 }
 
@@ -51,7 +52,7 @@ interface NotebookState {
   setLatestThinking: (text: string) => void;
   hypothesisGroups: { id: string; title: string; cellIds: string[] }[];
   addHypothesisGroup: (id: string, title: string) => void;
-  setAgentActivity: (activity: AgentActivity, detail: string, extra?: Partial<Pick<ActivityLogEntry, "cellId" | "cellType" | "hypothesisId">>) => void;
+  setAgentActivity: (activity: AgentActivity, detail: string, extra?: Partial<Pick<ActivityLogEntry, "cellId" | "cellType" | "hypothesisId" | "notebookId">>) => void;
   addChatAction: (detail: string, actionType: string) => void;
   clearActivityLog: () => void;
   resetForNewSession: () => void;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import type { Cell } from "@/lib/types";
 import { useNotebookStore } from "@/stores/notebookStore";
 import CellToolbar from "./CellToolbar";
@@ -17,7 +17,7 @@ interface Props {
   onRun: (cellId: string, source: string) => void;
 }
 
-export default function NotebookCell({ cell, isActive, onFocus, onRun }: Props) {
+function NotebookCellInner({ cell, isActive, onFocus, onRun }: Props) {
   const { updateCellSource, deleteCell, moveCell } = useNotebookStore();
   const fixedCellIds = useNotebookStore((s) => s.fixedCellIds);
   const [editingMarkdown, setEditingMarkdown] = useState(false);
@@ -164,3 +164,14 @@ export default function NotebookCell({ cell, isActive, onFocus, onRun }: Props) 
     </>
   );
 }
+
+export default React.memo(NotebookCellInner, (prev, next) => {
+  return (
+    prev.cell.id === next.cell.id &&
+    prev.cell.source === next.cell.source &&
+    prev.cell.outputs === next.cell.outputs &&
+    prev.cell.executing === next.cell.executing &&
+    prev.cell.error === next.cell.error &&
+    prev.isActive === next.isActive
+  );
+});

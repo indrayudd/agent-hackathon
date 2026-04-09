@@ -626,6 +626,255 @@ def _build_minimal_pdf(story: dict) -> bytes:
     return buffer.getvalue()
 
 
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    return (text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("**", "")  # Strip markdown bold
+        .replace("*", "")   # Strip markdown italic
+    )
+
+
+def _roman(n: int) -> str:
+    """Convert integer to Roman numeral."""
+    vals = [(1000,'M'),(900,'CM'),(500,'D'),(400,'CD'),(100,'C'),(90,'XC'),
+            (50,'L'),(40,'XL'),(10,'X'),(9,'IX'),(5,'V'),(4,'IV'),(1,'I')]
+    result = ""
+    for v, s in vals:
+        while n >= v:
+            result += s
+            n -= v
+    return result
+
+
+def _story_to_ieee_html(story_data: dict) -> str:
+    """Convert story data to IEEE-style HTML for PDF rendering."""
+    title = story_data.get("title", "EDA Report")
+    summary = story_data.get("executive_summary", "")
+    sections = story_data.get("sections", [])
+    generated_at = story_data.get("generated_at", "")
+
+    # Build sections HTML
+    sections_html = ""
+    fig_counter = 0
+    for i, section in enumerate(sections):
+        sec_title = section.get("title", f"Section {i+1}")
+        content = section.get("content", "")
+        # Convert markdown-like content to HTML paragraphs
+        content_html = ""
+        for para in content.split("\n"):
+            para = para.strip()
+            if not para:
+                continue
+            if para.startswith("- "):
+                content_html += f"<li>{_escape_html(para[2:])}</li>\n"
+            elif para.startswith("**") and para.endswith("**"):
+                content_html += f"<p><strong>{_escape_html(para[2:-2])}</strong></p>\n"
+            else:
+                content_html += f"<p>{_escape_html(para)}</p>\n"
+
+        # Add plots as figures
+        plots_html = ""
+        for plot in section.get("plots", []):
+            fig_counter += 1
+            img_src = ""
+            caption = plot.get("caption", plot.get("title", f"Figure {fig_counter}"))
+            if plot.get("kind") == "image" and plot.get("source"):
+                src = plot["source"]
+                if not src.startswith("data:"):
+                    src = f"data:image/png;base64,{src}"
+                img_src = src
+            elif isinstance(plot.get("source"), str) and plot.get("source", "").startswith("data:"):
+                img_src = plot["source"]
+            else:
+                # Plotly JSON or other non-image — skip for PDF
+                continue
+            if img_src:
+                plots_html += f'''
+                <div class="figure">
+                    <img src="{img_src}" alt="{_escape_html(str(caption))}" />
+                    <p class="fig-caption">Fig. {fig_counter}. {_escape_html(str(caption))}</p>
+                </div>'''
+
+        section_num = _roman(i + 1)
+        sections_html += f'''
+        <div class="section">
+            <h2>{section_num}. {_escape_html(sec_title)}</h2>
+            {content_html}
+            {plots_html}
+        </div>'''
+
+    return f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page {{
+    size: letter;
+    margin: 1in 0.75in;
+}}
+body {{
+    font-family: "Times New Roman", Times, serif;
+    font-size: 10pt;
+    line-height: 1.4;
+    color: #000;
+    column-count: 2;
+    column-gap: 0.25in;
+    text-align: justify;
+    max-width: none;
+}}
+h1 {{
+    column-span: all;
+    text-align: center;
+    font-size: 22pt;
+    font-weight: bold;
+    margin: 0 0 4pt 0;
+    line-height: 1.2;
+}}
+.authors {{
+    column-span: all;
+    text-align: center;
+    font-size: 10pt;
+    margin-bottom: 8pt;
+    color: #333;
+}}
+.date {{
+    column-span: all;
+    text-align: center;
+    font-size: 9pt;
+    color: #666;
+    margin-bottom: 16pt;
+}}
+.abstract {{
+    column-span: all;
+    margin: 0 0.5in 16pt 0.5in;
+    font-size: 9pt;
+}}
+.abstract h3 {{
+    font-size: 10pt;
+    font-style: italic;
+    font-weight: bold;
+    margin: 0 0 4pt 0;
+    text-align: center;
+}}
+.abstract p {{
+    text-align: justify;
+    margin: 0;
+}}
+h2 {{
+    font-size: 11pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    text-align: center;
+    margin: 12pt 0 6pt 0;
+}}
+h3 {{
+    font-size: 10pt;
+    font-style: italic;
+    font-weight: bold;
+    margin: 8pt 0 4pt 0;
+}}
+p {{
+    margin: 0 0 6pt 0;
+    text-indent: 0.25in;
+}}
+p:first-child {{
+    text-indent: 0;
+}}
+li {{
+    margin: 2pt 0;
+    font-size: 9pt;
+}}
+.figure {{
+    break-inside: avoid;
+    text-align: center;
+    margin: 8pt 0;
+    padding: 4pt;
+    border: 0.5pt solid #ccc;
+}}
+.figure img {{
+    max-width: 100%;
+    height: auto;
+    max-height: 3in;
+}}
+.fig-caption {{
+    font-size: 8pt;
+    text-indent: 0;
+    margin: 4pt 0 0 0;
+    text-align: center;
+    font-style: italic;
+}}
+.section {{
+    break-inside: auto;
+}}
+.footer {{
+    column-span: all;
+    text-align: center;
+    font-size: 8pt;
+    color: #999;
+    margin-top: 16pt;
+    border-top: 0.5pt solid #ccc;
+    padding-top: 4pt;
+}}
+strong {{ font-weight: bold; }}
+em {{ font-style: italic; }}
+</style>
+</head>
+<body>
+<h1>{_escape_html(title)}</h1>
+<p class="authors">AgenticEDA Automated Analysis</p>
+<p class="date">Generated: {_escape_html(generated_at[:10] if generated_at else "")}</p>
+
+<div class="abstract">
+    <h3>Abstract</h3>
+    <p>{_escape_html(summary[:2000])}</p>
+</div>
+
+{sections_html}
+
+<div class="footer">
+    This report was automatically generated by AgenticEDA.
+</div>
+</body>
+</html>'''
+
+
+def _story_to_ieee_markdown(story_data: dict) -> str:
+    """Convert story data to clean IEEE-style markdown."""
+    lines = []
+    title = story_data.get("title", "EDA Report")
+    summary = story_data.get("executive_summary", "")
+    sections = story_data.get("sections", [])
+    generated_at = story_data.get("generated_at", "")
+
+    lines.append(f"# {title}\n")
+    lines.append(f"*AgenticEDA Automated Analysis — {generated_at[:10] if generated_at else ''}*\n")
+    lines.append(f"## Abstract\n")
+    lines.append(f"{summary}\n")
+
+    fig_counter = 0
+    for i, section in enumerate(sections):
+        sec_title = section.get("title", f"Section {i+1}")
+        content = section.get("content", "")
+        section_num = _roman(i + 1)
+        lines.append(f"## {section_num}. {sec_title}\n")
+        lines.append(f"{content}\n")
+
+        for plot in section.get("plots", []):
+            fig_counter += 1
+            caption = plot.get("caption", plot.get("title", f"Figure {fig_counter}"))
+            if plot.get("kind") == "image" and plot.get("source"):
+                src = plot["source"]
+                lines.append(f"\n![Fig. {fig_counter}. {caption}]({src[:80]}...)\n")
+                lines.append(f"*Fig. {fig_counter}. {caption}*\n")
+
+    lines.append(f"\n---\n*This report was automatically generated by AgenticEDA.*\n")
+    return "\n".join(lines)
+
+
 def _story_pdf_filename(story: dict) -> str:
     """Build a safe PDF filename from the story title."""
     title = str(story.get("title", "eda-report")).strip().lower()
@@ -634,25 +883,12 @@ def _story_pdf_filename(story: dict) -> str:
 
 
 def _export_story_pdf(story: dict) -> bytes:
-    """Export story as PDF, using WeasyPrint when available and a local fallback otherwise."""
-    md_text = _story_to_markdown(story)
+    """Export story as IEEE-style PDF, using WeasyPrint when available and a local fallback otherwise."""
     try:
-        import markdown as md_lib
         import weasyprint
 
-        html_body = md_lib.markdown(md_text, extensions=["tables", "fenced_code"])
-        full_html = (
-            "<html><head><meta charset='utf-8'>"
-            "<style>"
-            "body{font-family:sans-serif;max-width:800px;margin:0 auto;padding:28px;line-height:1.5;color:#111}"
-            "h1,h2,h3{line-height:1.2}"
-            "img{max-width:100%}"
-            "pre{background:#f5f5f5;padding:10px;overflow-x:auto}"
-            "blockquote{border-left:4px solid #ddd;padding-left:12px;color:#555}"
-            "</style></head><body>"
-            f"{html_body}</body></html>"
-        )
-        return weasyprint.HTML(string=full_html).write_pdf()
+        html_content = _story_to_ieee_html(story)
+        return weasyprint.HTML(string=html_content).write_pdf()
     except Exception as exc:
         _LOG.warning("Story PDF render fell back to built-in PDF writer: %s", exc)
         return _build_minimal_pdf(story)
@@ -666,7 +902,7 @@ async def get_story(session_id: str, format: str = Query("json")):
     story = _augment_story_plot_metadata(session_id, story)
 
     if format == "md":
-        md = _story_to_markdown(story)
+        md = _story_to_ieee_markdown(story)
         return PlainTextResponse(md, media_type="text/markdown")
 
     if format == "pdf":
@@ -699,6 +935,18 @@ async def regenerate_story(session_id: str):
         session_dir = get_session_dir(session_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Load existing KG if available
+    from src.agent.knowledge_graph import KnowledgeGraph
+    kg = None
+    existing_story = session_dir / "story.json"
+    if existing_story.exists():
+        try:
+            old_data = json.loads(existing_story.read_text())
+            if "knowledge_graph" in old_data:
+                kg = KnowledgeGraph.from_dict(old_data["knowledge_graph"])
+        except Exception:
+            pass
 
     nb_path = session_dir / "notebook.ipynb"
     if not nb_path.exists():
@@ -807,6 +1055,9 @@ async def regenerate_story(session_id: str):
         "sections": sections,
         "generated_at": datetime.datetime.now().isoformat(),
     }
+
+    if kg is not None:
+        story_data["knowledge_graph"] = kg.to_dict()
 
     story_path = session_dir / "story.json"
     story_path.write_text(json.dumps(story_data, default=str, indent=2))
