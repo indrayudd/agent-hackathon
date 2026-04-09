@@ -83,7 +83,7 @@ class TestChatKGIntegration(unittest.TestCase):
         assert "set_session_kg" in source
         assert "_session_kgs" in source
         assert "find_similar_hypothesis" in source
-        assert "chat_investigation_complete" in source
+        assert "subagent_complete" in source
 
     def test_chat_context_accepts_kg(self):
         from src.chat.chat_agent import ChatContext

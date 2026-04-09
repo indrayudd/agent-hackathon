@@ -316,6 +316,22 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
 
     _LOG.info("Running hypothesis investigation for session %s: %s", session_id, hyp.title)
 
+    # Create a dedicated notebook for this chat investigation
+    chat_notebook_id = f"chat_{int(time.time())}"
+
+    push_event(session_id, {
+        "type": "subagent_start",
+        "hypothesis_id": hyp.id,
+        "notebook_id": chat_notebook_id,
+        "title": hyp.title,
+    })
+
+    # Switch UI to the new notebook tab
+    push_event(session_id, {
+        "type": "notebook_focus",
+        "notebook_id": chat_notebook_id,
+    })
+
     # Ensure kernel has data
     if not is_kernel_alive(session_id):
         session_dir = get_session_dir(session_id)
@@ -325,8 +341,8 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             execute_code(session_id, load_code, timeout=15)
 
     # Push investigation start
-    push_event(session_id, {"type": "phase_transition", "phase": f"Chat Investigation: {hyp.title}"})
-    push_event(session_id, {"type": "cell_write", "cell_id": f"chat_hyp_header", "cell_type": "markdown", "source": f"### Chat Investigation: {hyp.title}\n\n{hyp.description}"})
+    push_event(session_id, {"type": "phase_transition", "phase": f"Chat Investigation: {hyp.title}", "notebook_id": chat_notebook_id})
+    push_event(session_id, {"type": "cell_write", "cell_id": f"chat_hyp_header", "cell_type": "markdown", "source": f"### Chat Investigation: {hyp.title}\n\n{hyp.description}", "notebook_id": chat_notebook_id})
 
     # Get current cell count from notebook
     cell_counter = [int(time.time()) % 10000]
@@ -344,6 +360,7 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             execute_code=execute_code,
             cell_counter=cell_counter,
             max_cells=5,
+            notebook_id=chat_notebook_id,
         )
 
         # Update story with new investigation
@@ -369,8 +386,9 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
             _LOG.warning("Story update/snapshot failed for investigation %s: %s", hyp.title, exc)
 
         push_event(session_id, {
-            "type": "chat_investigation_complete",
+            "type": "subagent_complete",
             "hypothesis_id": hyp.id,
+            "notebook_id": chat_notebook_id,
             "finding": result.finding,
             "confidence": result.confidence,
         })
@@ -385,8 +403,9 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
     except Exception as exc:
         _LOG.warning("Hypothesis investigation failed: %s", exc)
         push_event(session_id, {
-            "type": "chat_investigation_complete",
+            "type": "subagent_complete",
             "hypothesis_id": getattr(hyp, 'id', 'unknown'),
+            "notebook_id": chat_notebook_id,
             "finding": f"Investigation failed: {exc}",
             "confidence": 0.0,
         })

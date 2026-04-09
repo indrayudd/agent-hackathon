@@ -27,6 +27,7 @@ type StreamEvent =
   | { type: "loop_start"; loop_number?: number; total_loops?: number }
   | { type: "loop_complete"; loop_number?: number }
   | { type: "notebook_clear"; notebook_id?: string }
+  | { type: "notebook_focus"; notebook_id?: string }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -226,6 +227,13 @@ export function useAgentStream(sessionId: string) {
           case "notebook_clear":
             if (data.notebook_id) {
               store.clearNotebookCells(data.notebook_id);
+            }
+            break;
+
+          case "notebook_focus":
+            if (data.notebook_id) {
+              store.setActiveNotebook(data.notebook_id);
+              store.setActiveTab("notebook");
             }
             break;
 
