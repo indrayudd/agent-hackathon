@@ -32,3 +32,4 @@ frontend/.next/
 
 output/
 *.log
+reference_repos/
