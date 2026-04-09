@@ -312,7 +312,18 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       let newCells: Cell[];
       if (existing >= 0) {
         newCells = [...nb.cells];
-        newCells[existing] = { ...newCells[existing], ...cell };
+        // Only merge non-empty fields to avoid overwriting source with ""
+        const merged = { ...newCells[existing] };
+        for (const [k, v] of Object.entries(cell)) {
+          if (v !== "" && v !== undefined && v !== null) {
+            (merged as any)[k] = v;
+          }
+        }
+        // Always merge outputs and error even if "empty" (they represent real state)
+        if (cell.outputs !== undefined) merged.outputs = cell.outputs;
+        if (cell.error !== undefined) merged.error = cell.error;
+        if (cell.executing !== undefined) merged.executing = cell.executing;
+        newCells[existing] = merged;
       } else {
         newCells = [...nb.cells, cell];
       }

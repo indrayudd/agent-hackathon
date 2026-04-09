@@ -618,19 +618,14 @@ def run_agent(
         cell_counters.extend(loop_cell_counters)
         results: list[InvestigationResult] = []
 
+        # Dispatch subagents in parallel — don't write hypothesis cells yet
         actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
+        hypothesis_order = []  # Track original order for result writing
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(actual_workers, 1)) as executor:
             futures = {}
             for i, (hyp, kid) in enumerate(zip(hypotheses, sub_kernel_ids)):
                 notebook_id = f"investigation_{hyp.id}"
-
-                cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
-                _write_and_run(
-                    f"---\n\n### Hypothesis {i+1}: {hyp.title}\n\n"
-                    f"> {hyp.description}\n\n"
-                    f"**Relevant columns:** {cols_str}",
-                    "markdown",
-                )
+                hypothesis_order.append((hyp, notebook_id))
 
                 push_event(session_id, {
                     "type": "subagent_start",
@@ -663,12 +658,15 @@ def run_agent(
                 )
                 futures[future] = (hyp, notebook_id)
 
+            # Collect results keyed by hypothesis_id for ordered writing
+            results_by_hyp: dict[str, InvestigationResult] = {}
             try:
                 for future in concurrent.futures.as_completed(futures, timeout=loop_timeout):
                     hyp, notebook_id = futures[future]
                     try:
                         result = future.result(timeout=10)
                         results.append(result)
+                        results_by_hyp[hyp.id] = result
                         state.subagent_run_count += 1
 
                         push_event(session_id, {
@@ -713,8 +711,36 @@ def run_agent(
             "results_count": len(results),
         })
 
-        # Ingest results into KG
-        for result in results:
+        # Write hypothesis→result pairs in original order, ingest into KG
+        for hyp, notebook_id in hypothesis_order:
+            result = results_by_hyp.get(hyp.id)
+            cols_str = ", ".join(f"`{c}`" for c in hyp.relevant_cols) if hyp.relevant_cols else "all columns"
+
+            # Write hypothesis description
+            _write_and_run(
+                f"---\n\n### Hypothesis: {hyp.title}\n\n"
+                f"> {hyp.description}\n\n"
+                f"**Relevant columns:** {cols_str}",
+                "markdown",
+            )
+
+            if not result:
+                _write_and_run(
+                    f"**Result:** Investigation failed or timed out.",
+                    "markdown",
+                )
+                continue
+
+            # Write finding immediately after its hypothesis
+            conf_pct = int(result.confidence * 100)
+            conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
+            _write_and_run(
+                f"**Finding:** {result.finding}\n\n"
+                f"**Confidence:** {conf_label} ({conf_pct}%)",
+                "markdown",
+            )
+
+            # Ingest into KG
             nid = kg.add_investigation(
                 hypothesis_id=result.hypothesis_id,
                 hypothesis_title=result.hypothesis_title,
@@ -742,7 +768,6 @@ def run_agent(
                             vis_id = kg.add_fact(
                                 visual_finding,
                                 f"Visual: {result.hypothesis_title}",
-                                metadata={"type": "visual_insight"},
                             )
                             kg.nodes[vis_id].type = "visual_insight"
                             kg.add_edge(KGEdge(source_id=vis_id, target_id=nid, type="supports"))
@@ -758,16 +783,6 @@ def run_agent(
                 node = kg.nodes.get(nid)
                 if node:
                     node.metadata["plot_images"] = all_images
-
-            # Write finding as markdown
-            conf_pct = int(result.confidence * 100)
-            conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
-            _write_and_run(
-                f"### Finding: {result.hypothesis_title}\n\n"
-                f"{result.finding}\n\n"
-                f"**Confidence:** {conf_label} ({conf_pct}%)",
-                "markdown",
-            )
 
         push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
 
