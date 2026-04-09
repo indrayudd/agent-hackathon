@@ -237,20 +237,25 @@ Respond with JSON (no markdown fencing):
 
     # --- Execute investigation cells ---
     all_outputs = []
+    running_context = []  # Accumulate cell results for adaptive context
     for i, code in enumerate(cells_code):
         push_event(session_id, {
             "type": "thinking",
-            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}",
+            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}" + (
+                f" (previous: {running_context[-1][:80]}...)" if running_context else ""
+            ),
             "notebook_id": notebook_id,
         })
         failed_cell_id, outputs, error = _write_and_execute(code)
         if not error:
             all_outputs.append(_extract_text(outputs))
+            running_context.append(f"Cell {i+1} output:\n{_extract_text(outputs)[:500]}")
         else:
             # Try to fix the error once
             try:
+                context_str = "\n".join(running_context[-3:]) if running_context else "No previous outputs."
                 fix_response = llm.invoke([
-                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Respond with ONLY the corrected code, no explanation."),
+                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Previous cell outputs:\n{context_str}\n\nRespond with ONLY the corrected code, no explanation."),
                     HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
                 ])
                 fixed_code = fix_response.content.strip()
