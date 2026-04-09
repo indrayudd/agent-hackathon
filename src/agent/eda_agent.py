@@ -334,7 +334,7 @@ def run_agent(
                                     if dtype in ("float64", "int64"):
                                         if col_name not in state.numeric_cols:
                                             state.numeric_cols.append(col_name)
-                                    elif dtype == "object":
+                                    elif dtype in ("object", "str"):
                                         if col_name not in state.categorical_cols:
                                             state.categorical_cols.append(col_name)
                     state.columns = list(state.dtypes.keys())
@@ -551,7 +551,8 @@ def run_agent(
 
             hypotheses = novel
         except Exception as exc:
-            _LOG.warning("Hypothesis generation failed in loop %d: %s", loop_num, exc)
+            _LOG.exception("Hypothesis generation failed in loop %d: %s", loop_num, exc)
+            _think(f"Hypothesis generation failed: {exc}")
             hypotheses = []
 
         if not hypotheses:
