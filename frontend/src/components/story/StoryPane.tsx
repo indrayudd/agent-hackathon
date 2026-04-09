@@ -358,9 +358,9 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
               {regenerating ? (
                 <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
               ) : (
-                <span className="material-symbols-outlined text-sm">refresh</span>
+                <span className="material-symbols-outlined text-sm">auto_fix_high</span>
               )}
-              {regenerating ? "Regenerating..." : "Refresh"}
+              {regenerating ? "Regenerating..." : "Regenerate"}
             </button>
             <button
               onClick={() => handleExport("pdf")}

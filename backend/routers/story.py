@@ -700,6 +700,18 @@ async def regenerate_story(session_id: str):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Load existing KG if available
+    from src.agent.knowledge_graph import KnowledgeGraph
+    kg = None
+    existing_story = session_dir / "story.json"
+    if existing_story.exists():
+        try:
+            old_data = json.loads(existing_story.read_text())
+            if "knowledge_graph" in old_data:
+                kg = KnowledgeGraph.from_dict(old_data["knowledge_graph"])
+        except Exception:
+            pass
+
     nb_path = session_dir / "notebook.ipynb"
     if not nb_path.exists():
         raise HTTPException(status_code=404, detail="Notebook not found")
@@ -807,6 +819,9 @@ async def regenerate_story(session_id: str):
         "sections": sections,
         "generated_at": datetime.datetime.now().isoformat(),
     }
+
+    if kg is not None:
+        story_data["knowledge_graph"] = kg.to_dict()
 
     story_path = session_dir / "story.json"
     story_path.write_text(json.dumps(story_data, default=str, indent=2))
