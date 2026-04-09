@@ -618,15 +618,8 @@ def run_agent(
         cell_counters.extend(loop_cell_counters)
         results: list[InvestigationResult] = []
 
-        # Clear agent tabs for this loop (recycle from previous loop)
-        for i in range(len(hypotheses)):
-            agent_nb_id = f"agent_{i + 1}"
-            push_event(session_id, {
-                "type": "notebook_clear",
-                "notebook_id": agent_nb_id,
-            })
-
         # Dispatch subagents in parallel — don't write hypothesis cells yet
+        # Note: agent tabs accumulate across loops (loop divider provides visual separation)
         actual_workers = len(hypotheses) if any(k is not None for k in sub_kernel_ids) else 1
         hypothesis_order = []  # Track original order for result writing
         # ThreadPoolExecutor is correct here: subagent work is I/O-bound (kernel IPC + LLM API calls).
