@@ -326,7 +326,10 @@ def run_agent(
                             if len(parts) >= 2:
                                 col_name = " ".join(parts[:-1])
                                 dtype = parts[-1]
-                                if col_name and dtype in ("float64", "int64", "object", "datetime64[ns]", "bool"):
+                                # Skip pandas metadata lines like "dtype: object"
+                                if col_name.lower().rstrip(":") in ("dtype", "length", "name"):
+                                    continue
+                                if col_name and dtype in ("float64", "int64", "object", "datetime64[ns]", "bool", "str"):
                                     state.dtypes[col_name] = dtype
                                     if dtype in ("float64", "int64"):
                                         if col_name not in state.numeric_cols:
