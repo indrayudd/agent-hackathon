@@ -1,11 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { CSSProperties } from "react";
 import type { StorySection } from "@/lib/types";
 import type { StoryPlot } from "@/lib/types";
 import StoryMarkdown from "./StoryMarkdown";
 import PlotCarousel from "./PlotCarousel";
+
+/** Lazy-renders children only when the container scrolls near the viewport. */
+function LazyPlot({ children, height = 350 }: { children: React.ReactNode; height?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} style={{ minHeight: visible ? undefined : height }}>
+      {visible ? children : (
+        <div className="flex items-center justify-center text-on-surface-variant text-sm" style={{ height }}>
+          <span className="material-symbols-outlined animate-pulse" style={{ fontSize: "24px" }}>image</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   section: StorySection;
@@ -115,12 +147,14 @@ export default function StorySectionCard({
 
       {sectionPlots.length > 0 && (
         <div className="mt-8">
-          <PlotCarousel
-            plots={sectionPlots}
-            section={section}
-            plotCellIds={plotCellIds}
-            onOpenCell={onOpenCell}
-          />
+          <LazyPlot height={350}>
+            <PlotCarousel
+              plots={sectionPlots}
+              section={section}
+              plotCellIds={plotCellIds}
+              onOpenCell={onOpenCell}
+            />
+          </LazyPlot>
         </div>
       )}
 
