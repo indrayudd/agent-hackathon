@@ -147,140 +147,155 @@ def run_subagent(
                 parts.append("[plot generated]")
         return "\n".join(parts)
 
-    # --- Generate investigation plan ---
+    # --- Adaptive investigation loop ---
     try:
         from src.config.config import get_chat_model
         from langchain_core.messages import SystemMessage, HumanMessage
 
         llm = get_chat_model()
 
-        plan_response = llm.invoke([
-            SystemMessage(content=f"""You are investigating a data hypothesis. Generate Python code cells to test it.
+        system_prompt = f"""You are investigating a data hypothesis step by step. You write ONE Python code cell at a time, see its output, then decide the next step.
 
 Available columns: [{col_list}]
-Relevant columns for this hypothesis: [{relevant_str}]
+Relevant columns: [{relevant_str}]
 Time column: {time_col or 'none'}
-Variable `df` is already loaded in the kernel.
+Variable `df` is already loaded.
 
-{f"Previous findings from other investigations (do NOT repeat these, build on them):" + chr(10) + kg_context if kg_context else ""}
+{f"Previous findings from other investigations (build on these, don't repeat):" + chr(10) + kg_context if kg_context else ""}
 
 Rules:
-- Write at most {max_cells} code cells (as a JSON array of code strings)
-- Each cell should be focused on ONE analysis step
+- Write ONE code cell per response
 - Use ONLY columns from the available list
-- MANDATORY: At least ONE cell MUST produce a matplotlib visualization (scatter, line, bar, histogram, boxplot, heatmap, etc.) that directly supports or refutes the hypothesis. Always call plt.show() after plotting.
-- When a cell makes a plot, also call emit_plot_spec(...) with a hidden
-  structured payload that includes chart_family, semantic_intent, axis roles,
-  and the data needed to redraw the figure in the report. Do not print it.
+- Include matplotlib plots where relevant (always plt.show())
+- When plotting, also call emit_plot_spec(...) with chart_family, semantic_intent, axis roles
 - Print findings clearly with numbers
-- The cells should PROGRESSIVELY build toward answering the hypothesis
-- Include statistical tests where appropriate (scipy.stats, etc.)
-- A good investigation has: (1) data preparation, (2) visualization, (3) statistical test, (4) conclusion print
+- Include statistical tests where appropriate (scipy.stats)
+- A good investigation has: (1) data prep, (2) visualization, (3) statistical test, (4) conclusion print
 
 Respond with JSON (no markdown fencing):
-{{"cells": ["code string 1", "code string 2", ...], "reasoning": "what each cell does"}}"""),
-            HumanMessage(content=f"Hypothesis: {hypothesis_title}\nDescription: {hypothesis_description}"),
-        ])
+{{"code": "python code for ONE cell", "reasoning": "why this step", "done": false}}
 
-        text = plan_response.content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+Set "done": true when you have enough evidence to conclude. When done, set "code" to a final print statement summarizing the key finding."""
 
-        plan = json.loads(text)
-        cells_code = plan.get("cells", [])[:max_cells]
+        conversation: list = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Hypothesis: {hypothesis_title}\nDescription: {hypothesis_description}\n\nGenerate the first analysis step."),
+        ]
 
-        # Ensure at least one cell produces a plot — inject if LLM skipped it
-        has_plot = any("plt.show()" in c or "plt.savefig" in c for c in cells_code)
-        if not has_plot and relevant_cols and len(cells_code) < max_cells:
+        all_outputs: list[str] = []
+        cells_executed = 0
+
+        for step in range(max_cells):
+            push_event(session_id, {
+                "type": "thinking",
+                "content": f"Investigation step {step+1}/{max_cells} for: {hypothesis_title}" + (
+                    f" (last: {all_outputs[-1][:60]}...)" if all_outputs else ""
+                ),
+                "notebook_id": notebook_id,
+            })
+
+            # Ask LLM for next cell
+            try:
+                step_response = llm.invoke(conversation)
+                step_text = step_response.content.strip()
+                if step_text.startswith("```"):
+                    step_text = step_text.split("\n", 1)[1] if "\n" in step_text else step_text[3:]
+                    if step_text.endswith("```"):
+                        step_text = step_text[:-3]
+                    step_text = step_text.strip()
+
+                step_data = json.loads(step_text)
+                code = step_data.get("code", "")
+                reasoning = step_data.get("reasoning", "")
+                is_done = step_data.get("done", False)
+            except Exception as exc:
+                _LOG.warning("Subagent step %d LLM failed: %s", step+1, exc)
+                break
+
+            if not code:
+                break
+
+            # Execute the cell
+            cell_id, outputs, error = _write_and_execute(code)
+            cells_executed += 1
+
+            if not error:
+                output_text = _extract_text(outputs)
+                all_outputs.append(output_text)
+
+                # Build feedback for LLM including text + image descriptions
+                feedback = f"Cell {step+1} output:\n{output_text[:1000]}"
+                has_plot = any(
+                    o.get("data", {}).get("image/png")
+                    for o in outputs
+                )
+                if has_plot:
+                    feedback += "\n[A matplotlib plot was generated]"
+
+                # Add assistant response + output to conversation
+                conversation.append(step_response)
+                if is_done:
+                    break
+                conversation.append(HumanMessage(content=f"{feedback}\n\nWhat should the next analysis step be? (step {step+2}/{max_cells})"))
+            else:
+                # Try to fix the error
+                try:
+                    context_str = "\n".join(all_outputs[-3:]) if all_outputs else "No previous outputs."
+                    fix_response = llm.invoke([
+                        SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Previous outputs:\n{context_str}\n\nRespond with ONLY corrected code."),
+                        HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
+                    ])
+                    fixed_code = fix_response.content.strip()
+                    if fixed_code.startswith("```"):
+                        fixed_code = fixed_code.split("\n", 1)[1] if "\n" in fixed_code else fixed_code[3:]
+                        if fixed_code.endswith("```"):
+                            fixed_code = fixed_code[:-3]
+                        fixed_code = fixed_code.strip()
+                    push_event(session_id, {
+                        "type": "backtrack",
+                        "reason": f"Correcting: {error[:100]}",
+                        "cell_id": cell_id,
+                        "notebook_id": notebook_id,
+                    })
+                    _, fix_outputs, fix_error = _write_and_execute(
+                        fixed_code, cell_id=cell_id, overwrite=True,
+                    )
+                    if not fix_error:
+                        output_text = _extract_text(fix_outputs)
+                        all_outputs.append(output_text)
+                        conversation.append(step_response)
+                        conversation.append(HumanMessage(content=f"Cell {step+1} output (after fix):\n{output_text[:1000]}\n\nWhat next? (step {step+2}/{max_cells})"))
+                except Exception as fix_exc:
+                    _LOG.warning("Subagent error fix failed: %s", fix_exc)
+
+        # Ensure at least one plot was generated — inject if not
+        has_any_plot = bool(result.plot_cell_ids)
+        if not has_any_plot and relevant_cols and cells_executed < max_cells:
             col = relevant_cols[0]
             if len(relevant_cols) >= 2:
                 col2 = relevant_cols[1]
                 plot_code = (
                     f'fig, ax = plt.subplots(figsize=(10, 6))\n'
                     f'ax.scatter(df["{col}"].dropna(), df["{col2}"].dropna(), alpha=0.5, s=20)\n'
-                    f'ax.set_xlabel("{col}")\n'
-                    f'ax.set_ylabel("{col2}")\n'
-                    f'ax.set_title("{hypothesis_title}")\n'
-                    f'plt.tight_layout()\nplt.show()'
+                    f'ax.set_xlabel("{col}")\nax.set_ylabel("{col2}")\n'
+                    f'ax.set_title("{hypothesis_title}")\nplt.tight_layout()\nplt.show()'
                 )
             else:
                 plot_code = (
                     f'fig, ax = plt.subplots(figsize=(10, 6))\n'
                     f'ax.hist(df["{col}"].dropna(), bins=30, edgecolor="black", alpha=0.7)\n'
-                    f'ax.set_xlabel("{col}")\n'
-                    f'ax.set_title("{hypothesis_title}")\n'
+                    f'ax.set_xlabel("{col}")\nax.set_title("{hypothesis_title}")\n'
                     f'plt.tight_layout()\nplt.show()'
                 )
-            cells_code.insert(-1 if cells_code else 0, plot_code)
+            _write_and_execute(plot_code)
 
     except Exception as exc:
-        _LOG.warning("Subagent plan generation failed: %s", exc)
-        # Fallback: basic analysis of relevant columns
-        cells_code = []
-        if relevant_cols:
+        _LOG.warning("Subagent adaptive loop failed: %s", exc)
+        # Fallback: basic analysis
+        if relevant_cols and not all_outputs:
             col = relevant_cols[0]
-            cells_code.append(f'print(df["{col}"].describe())')
-            if len(relevant_cols) >= 2:
-                col2 = relevant_cols[1]
-                cells_code.append(
-                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
-                    f'ax.scatter(df["{col}"], df["{col2}"], alpha=0.5)\n'
-                    f'ax.set_xlabel("{col}")\n'
-                    f'ax.set_ylabel("{col2}")\n'
-                    f'ax.set_title("{col} vs {col2}")\n'
-                    f'plt.show()\n'
-                    f'try:\n'
-                    f'    emit_plot_spec({{"chart_family": "scatter", "semantic_intent": "relationship", "x_axis_role": "numeric", "y_axis_role": "numeric", "x_axis_label": "{col}", "y_axis_label": "{col2}", "trace_count": 1, "series": [{{"label": "{col} vs {col2}", "x": df["{col}"].dropna().tolist(), "y": df["{col2}"].dropna().tolist()}}]}})\n'
-                    f'except NameError:\n'
-                    f'    pass'
-                )
-
-    # --- Execute investigation cells ---
-    all_outputs = []
-    running_context = []  # Accumulate cell results for adaptive context
-    for i, code in enumerate(cells_code):
-        push_event(session_id, {
-            "type": "thinking",
-            "content": f"Investigation step {i+1}/{len(cells_code)} for: {hypothesis_title}" + (
-                f" (previous: {running_context[-1][:80]}...)" if running_context else ""
-            ),
-            "notebook_id": notebook_id,
-        })
-        failed_cell_id, outputs, error = _write_and_execute(code)
-        if not error:
-            all_outputs.append(_extract_text(outputs))
-            running_context.append(f"Cell {i+1} output:\n{_extract_text(outputs)[:500]}")
-        else:
-            # Try to fix the error once
-            try:
-                context_str = "\n".join(running_context[-3:]) if running_context else "No previous outputs."
-                fix_response = llm.invoke([
-                    SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Previous cell outputs:\n{context_str}\n\nRespond with ONLY the corrected code, no explanation."),
-                    HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
-                ])
-                fixed_code = fix_response.content.strip()
-                if fixed_code.startswith("```"):
-                    fixed_code = fixed_code.split("\n", 1)[1] if "\n" in fixed_code else fixed_code[3:]
-                    if fixed_code.endswith("```"):
-                        fixed_code = fixed_code[:-3]
-                    fixed_code = fixed_code.strip()
-                push_event(session_id, {
-                    "type": "backtrack",
-                    "reason": f"Correcting error in investigation: {error[:100]}",
-                    "cell_id": failed_cell_id,
-                })
-                _, fix_outputs, fix_error = _write_and_execute(
-                    fixed_code,
-                    cell_id=failed_cell_id,
-                    overwrite=True,
-                )
-                if not fix_error:
-                    all_outputs.append(_extract_text(fix_outputs))
-            except Exception:
-                pass
+            _write_and_execute(f'print(df["{col}"].describe())')
+            all_outputs.append(f"Described {col}")
 
     # --- Synthesize conclusion with vision ---
     combined_output = "\n---\n".join(all_outputs[:5])
