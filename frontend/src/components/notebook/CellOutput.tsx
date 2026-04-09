@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { CellOutput as CellOutputType } from "@/lib/types";
 import AnsiToHtml from "ansi-to-html";
@@ -144,7 +144,7 @@ function SingleOutput({ output }: { output: CellOutputType }) {
   return null;
 }
 
-export default function CellOutput({ outputs }: Props) {
+const CellOutput = React.memo(function CellOutput({ outputs }: Props) {
   const filtered = useMemo(
     () => outputs.filter((o) => o.text || o.data || o.traceback),
     [outputs]
@@ -159,4 +159,6 @@ export default function CellOutput({ outputs }: Props) {
       ))}
     </div>
   );
-}
+});
+
+export default CellOutput;

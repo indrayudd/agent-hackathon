@@ -10,7 +10,11 @@ import NotebookTabs from "./NotebookTabs";
 import ThinkingBlock from "./ThinkingBlock";
 
 export default function NotebookPane() {
-  const { cells, addCell, updateCellOutputs, pipelineRunning, currentPhase, latestThinking } = useNotebookStore();
+  const cells = useNotebookStore((s) => s.cells);
+  const addCell = useNotebookStore((s) => s.addCell);
+  const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
+  const currentPhase = useNotebookStore((s) => s.currentPhase);
+  const latestThinking = useNotebookStore((s) => s.latestThinking);
   const activeNbId = useNotebookStore((s: any) => s.activeNotebookId) as string;
   const investigationCells = useNotebookStore((s: any) => s.notebooks[s.activeNotebookId]?.cells || []) as Cell[];
   const displayCells = activeNbId === "main" ? cells : investigationCells;
@@ -140,19 +144,19 @@ export default function NotebookPane() {
   const handleRunCell = useCallback(
     async (cellId: string, source: string) => {
       const outputs = await executeCell(cellId, source);
-      updateCellOutputs(cellId, outputs);
+      useNotebookStore.getState().updateCellOutputs(cellId, outputs);
     },
-    [executeCell, updateCellOutputs]
+    [executeCell]
   );
 
   const handleRunAll = useCallback(async () => {
     for (const cell of cells) {
       if (cell.cell_type === "code") {
         const outputs = await executeCell(cell.id, cell.source);
-        updateCellOutputs(cell.id, outputs);
+        useNotebookStore.getState().updateCellOutputs(cell.id, outputs);
       }
     }
-  }, [cells, executeCell, updateCellOutputs]);
+  }, [cells, executeCell]);
 
   const statusColor =
     status === "connected"

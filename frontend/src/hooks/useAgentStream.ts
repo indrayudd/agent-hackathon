@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { useStoryStore } from "@/stores/storyStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -32,6 +32,7 @@ type StreamEvent =
 export function useAgentStream(sessionId: string) {
   const connected = useRef<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
+  const thinkingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (connected.current === sessionId) return;
@@ -58,7 +59,11 @@ export function useAgentStream(sessionId: string) {
 
         switch (data.type) {
           case "thinking":
-            store.setLatestThinking(data.content || "");
+            // Debounce thinking updates to reduce re-renders
+            if (thinkingTimer.current) clearTimeout(thinkingTimer.current);
+            thinkingTimer.current = setTimeout(() => {
+              store.setLatestThinking(data.content || "");
+            }, 150);
             store.setAgentActivity("thinking", data.content || "Thinking...", { notebookId: "main" });
             break;
 
@@ -133,10 +138,7 @@ export function useAgentStream(sessionId: string) {
                 .map((o: any) => o.text || o.data?.["text/plain"] || "")
                 .join("")
                 .trim();
-            if (outputText && outputText.length > 10) {
-                const firstLine = outputText.split("\n")[0].slice(0, 80);
-                store.setLatestThinking(firstLine);
-            }
+            // Removed cosmetic setLatestThinking call to reduce re-renders
             break;
           }
 
