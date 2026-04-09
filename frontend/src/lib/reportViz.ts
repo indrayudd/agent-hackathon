@@ -622,6 +622,15 @@ function routeRenderer(
   classification: PlotlyFigureClassification | null,
   backendViz: StoryPlotVizSpec | null
 ): { renderer: Exclude<ReportRendererKind, "unknown">; fallbackRenderer: Exclude<ReportRendererKind, "unknown">; reason: string } {
+  // Force static image fallback for box/violin — D3/Plotly garble matplotlib boxplot data
+  if (classification?.kind === "box" || classification?.kind === "violin") {
+    return {
+      renderer: "image" as const,
+      fallbackRenderer: "image" as const,
+      reason: "static image fallback for box/violin plots",
+    };
+  }
+
   if (backendViz?.renderer === "image") {
     return {
       renderer: "image",
