@@ -146,6 +146,29 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                             )
                         if plots:
                             section["plots"] = plots
+
+                        # Fallback for investigation plots: extract from KG metadata
+                        if not plots and section.get("type") == "investigation":
+                            try:
+                                kg_data = kg.to_dict() if kg else {}
+                                for nid_key, node_data in kg_data.get("nodes", {}).items():
+                                    if (node_data.get("type") == "conclusion" and
+                                        node_data.get("phase", "").replace("Investigation: ", "") == section.get("title", "")):
+                                        plot_images = node_data.get("metadata", {}).get("plot_images", [])
+                                        for pi in plot_images:
+                                            plots.append({
+                                                "kind": "image",
+                                                "mime_type": "image/png",
+                                                "source": pi["image_png"],
+                                                "title": section.get("title", ""),
+                                                "caption": f"Investigation plot for {section.get('title', '')}",
+                                                "source_cell_id": pi.get("cell_id", ""),
+                                            })
+                                        break
+                            except Exception as plot_exc:
+                                _LOG.warning("KG plot extraction failed: %s", plot_exc)
+                            if plots:
+                                section["plots"] = plots
                 except Exception as plot_exc:
                     _LOG.warning("Plot artifact bridge failed for session %s: %s", session_id, plot_exc)
 

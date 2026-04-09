@@ -749,6 +749,16 @@ def run_agent(
                     except Exception:
                         pass
 
+            # Store raw plot images in KG metadata for story generation
+            all_images = []
+            for cell_id, imgs in getattr(result, 'images', {}).items():
+                for img in imgs:
+                    all_images.append({"cell_id": cell_id, "image_png": img})
+            if all_images:
+                node = kg.nodes.get(nid)
+                if node:
+                    node.metadata["plot_images"] = all_images
+
             # Write finding as markdown
             conf_pct = int(result.confidence * 100)
             conf_label = "High" if conf_pct >= 70 else "Medium" if conf_pct >= 40 else "Low"
