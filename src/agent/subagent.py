@@ -21,6 +21,7 @@ class InvestigationResult:
     confidence: float = 0.5
     sub_findings: list[dict] = field(default_factory=list)
     images: dict[str, list[str]] = field(default_factory=dict)  # cell_id -> [base64 png]
+    relevant_cols: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ def run_subagent(
         hypothesis_title=hypothesis_title,
         finding="",
     )
+    result.relevant_cols = relevant_cols
 
     col_list = ", ".join(f'"{c}"' for c in all_columns)
     relevant_str = ", ".join(f'"{c}"' for c in relevant_cols)

@@ -486,6 +486,13 @@ def run_agent(
     from backend.services.session_manager import get_session_dir
     session_dir = str(get_session_dir(session_id) / "uploads")
 
+    # Verify checkpoint exists
+    import pathlib
+    cache_path = pathlib.Path(session_dir) / ".cache" / "df_clean.parquet"
+    parquet_available = cache_path.exists()
+    if not parquet_available:
+        _LOG.warning("Dataset checkpoint not found at %s — subagents will use main kernel", cache_path)
+
     _transition("Investigation Phase", "Generating hypotheses from initial findings...", render_cell=False)
     findings_summary = "\n".join(f"- {f.get('finding', '')}" for f in state.findings if f.get('finding'))
     _write_and_run(
@@ -559,16 +566,20 @@ def run_agent(
 
         # Allocate subagent kernels for parallel execution
         sub_kernel_ids = [None] * len(hypotheses)
-        try:
-            sub_kernel_ids = pool.allocate_subagent_kernels(session_id, len(hypotheses))
-            for kid in sub_kernel_ids:
-                try:
+        if parquet_available:
+            try:
+                sub_kernel_ids = pool.allocate_subagent_kernels(session_id, len(hypotheses))
+                for kid in sub_kernel_ids:
                     pool.inject_dataset_preamble(kid, session_dir)
+            except Exception as exc:
+                _LOG.warning("Kernel allocation/preamble failed: %s — falling back to main kernel", exc)
+                try:
+                    pool.shutdown_subagent_kernels(session_id)
                 except Exception:
-                    _LOG.warning("Preamble injection failed for %s", kid)
-        except Exception as exc:
-            _LOG.warning("Kernel allocation failed: %s - falling back to sequential", exc)
-            sub_kernel_ids = [None] * len(hypotheses)
+                    pass
+                sub_kernel_ids = [None] * len(hypotheses)
+        else:
+            _think("Using main kernel for investigations (no parquet checkpoint).")
 
         # Run subagents via ThreadPoolExecutor
         import concurrent.futures
@@ -621,33 +632,39 @@ def run_agent(
                 )
                 futures[future] = (hyp, notebook_id)
 
-            for future in concurrent.futures.as_completed(futures, timeout=loop_timeout):
-                hyp, notebook_id = futures[future]
-                try:
-                    result = future.result(timeout=10)
-                    results.append(result)
-                    state.subagent_run_count += 1
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=loop_timeout):
+                    hyp, notebook_id = futures[future]
+                    try:
+                        result = future.result(timeout=10)
+                        results.append(result)
+                        state.subagent_run_count += 1
 
-                    push_event(session_id, {
-                        "type": "subagent_complete",
-                        "hypothesis_id": hyp.id,
-                        "notebook_id": notebook_id,
-                        "finding": result.finding,
-                        "confidence": result.confidence,
-                    })
-                except concurrent.futures.TimeoutError:
-                    _LOG.warning("Subagent for %s timed out", hyp.id)
-                    push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id})
-                    _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
-                except Exception as exc:
-                    _LOG.warning("Subagent for %s failed: %s", hyp.id, exc)
-                    _think(f"Investigation of '{hyp.title}' failed. Moving on.")
+                        push_event(session_id, {
+                            "type": "subagent_complete",
+                            "hypothesis_id": hyp.id,
+                            "notebook_id": notebook_id,
+                            "finding": result.finding,
+                            "confidence": result.confidence,
+                        })
+                    except (concurrent.futures.TimeoutError, Exception) as exc:
+                        _LOG.warning("Subagent for %s failed: %s", hyp.id, exc)
+                        push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id})
+                        _think(f"Investigation of '{hyp.title}' failed or timed out. Moving on.")
+            except concurrent.futures.TimeoutError:
+                _LOG.warning("Investigation loop %d timed out after %ds", loop_num, loop_timeout)
+                _think(f"Loop {loop_num} timed out. Collecting partial results.")
 
         # Shutdown subagent kernels after this loop
         try:
             pool.shutdown_subagent_kernels(session_id)
         except Exception:
             pass
+
+        if not results:
+            _think(f"Loop {loop_num}: all investigations failed. Stopping.")
+            push_event(session_id, {"type": "loop_complete", "loop_number": loop_num})
+            break
 
         # Ingest results into KG
         for result in results:
