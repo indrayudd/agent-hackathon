@@ -13,6 +13,42 @@ import { useChatStore } from "@/stores/chatStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useAgentStream } from "@/hooks/useAgentStream";
 import { getNotebook, getStory, listSessions } from "@/lib/api";
+
+/** Circular progress indicator estimating LLM context window usage. */
+function ContextWindowIndicator({ cellCount, findingsCount }: { cellCount: number; findingsCount: number }) {
+  // Estimate: ~500 tokens per cell, ~200 per finding, 128k context window
+  const maxTokens = 128_000;
+  const estimatedUsed = cellCount * 500 + findingsCount * 200 + 2000; // 2k base
+  const ratio = Math.min(1, estimatedUsed / maxTokens);
+  const pct = Math.round(ratio * 100);
+
+  const radius = 12;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference * (1 - ratio);
+
+  const color = pct > 80 ? "#ef4444" : pct > 50 ? "#f59e0b" : "#6366f1";
+
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5" title={`~${Math.round(estimatedUsed / 1000)}k / ${maxTokens / 1000}k tokens`}>
+      <svg width="28" height="28" viewBox="0 0 28 28">
+        <circle cx="14" cy="14" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="3" />
+        <circle
+          cx="14" cy="14" r={radius}
+          fill="none" stroke={color} strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          transform="rotate(-90 14 14)"
+          style={{ transition: "stroke-dashoffset 0.5s ease" }}
+        />
+      </svg>
+      <div className="flex flex-col">
+        <span className="text-[9px] font-medium text-on-surface">{pct}% context</span>
+        <span className="text-[8px] text-on-surface-variant">~{Math.round(estimatedUsed / 1000)}k tokens</span>
+      </div>
+    </div>
+  );
+}
 import type { Cell, CellOutput, Session } from "@/lib/types";
 
 function normalizeText(value: unknown): string {
@@ -440,15 +476,16 @@ export default function SessionPage() {
             <AgentActivityBadge />
           </div>
 
-          {/* Kernel Status */}
-          <div className="p-4 border-t border-outline-variant/10">
+          {/* Kernel Status + Context Window */}
+          <div className="p-4 border-t border-outline-variant/10 space-y-2">
             <div className="flex items-center justify-between p-2 rounded-lg bg-primary/5 border border-primary/10">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-primary text-[16px]">cloud_done</span>
                 <span className="text-[10px] font-bold text-on-surface truncate">Py Kernel</span>
               </div>
-              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              <div className={`w-1.5 h-1.5 rounded-full ${pipelineRunning ? "bg-green-500 animate-pulse" : "bg-green-500"}`} />
             </div>
+            <ContextWindowIndicator cellCount={cellCount} findingsCount={hypothesisGroups.length} />
           </div>
         </section>
 

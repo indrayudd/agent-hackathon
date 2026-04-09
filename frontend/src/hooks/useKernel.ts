@@ -1,20 +1,30 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
+import { useNotebookStore } from "@/stores/notebookStore";
 import type { CellOutput } from "@/lib/types";
 
 type KernelStatus = "disconnected" | "connected" | "busy";
 
 export function useKernel(_sessionId: string) {
-  const [status] = useState<KernelStatus>("disconnected");
+  // Derive kernel status from pipeline state instead of hardcoding
+  const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
+  const agentActivity = useNotebookStore((s) => s.agentActivity);
+
+  let status: KernelStatus = "disconnected";
+  if (pipelineRunning) {
+    status = agentActivity === "executing" ? "busy" : "connected";
+  } else if (agentActivity === "complete" || agentActivity === "idle") {
+    // Pipeline finished — kernel is alive but idle
+    status = "connected";
+  }
 
   const executeCell = useCallback(
     async (_cellId: string, _source: string): Promise<CellOutput[]> => {
-      // Real implementation will connect to ws://localhost:8000/api/kernel/{sessionId}/channels
       return [
         {
           output_type: "stream",
-          text: "Kernel not connected. Cell execution will be available when the kernel gateway is configured.",
+          text: "Cell execution via kernel gateway not yet configured.",
         },
       ];
     },
