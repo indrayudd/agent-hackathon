@@ -300,9 +300,12 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
                     _LOG.info("Loaded KG from story.json for session %s", session_id)
         except Exception as exc:
             _LOG.warning("Failed to load KG from story.json: %s", exc)
+    # Only skip if an EXTREMELY similar hypothesis was already investigated with high confidence
+    # Threshold 0.8 = requires near-identical column overlap + title similarity
+    # Confidence 0.85 = only skip if prior result was very strong
     if kg is not None:
-        existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
-        if existing and existing.confidence > 0.6:
+        existing = kg.find_similar_hypothesis(hyp, threshold=0.8)
+        if existing and existing.confidence > 0.85:
             return {
                 "role": "agent",
                 "type": "text",

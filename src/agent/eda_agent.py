@@ -549,8 +549,8 @@ def run_agent(
             # Deduplicate against KG
             novel = []
             for hyp in hypotheses:
-                existing = kg.find_similar_hypothesis(hyp, threshold=0.5)
-                if existing and existing.confidence > 0.6:
+                existing = kg.find_similar_hypothesis(hyp, threshold=0.75)
+                if existing and existing.confidence > 0.8:
                     _think(f"Skipping '{hyp.title}' - already investigated (confidence: {existing.confidence:.0%})")
                     continue
                 novel.append(hyp)
