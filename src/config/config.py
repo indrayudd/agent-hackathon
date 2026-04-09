@@ -89,8 +89,17 @@ def get_agent_model() -> str:
     return os.getenv("EDA_AGENT_MODEL", "gpt-5.4-nano-2026-03-17")
 
 
-@lru_cache(maxsize=1)
-def get_chat_model(*, model: str | None = None) -> object:
+def get_subagent_model() -> str:
+    """Return the model name for fast subagent code generation.
+
+    Reads from env var ``EDA_SUBAGENT_MODEL``; falls back to the main model.
+    Use a faster/cheaper model here for speed (e.g., gpt-4o-mini).
+    """
+    return os.getenv("EDA_SUBAGENT_MODEL", os.getenv("LLM_MODEL", "gpt-5.4-nano-2026-03-17"))
+
+
+@lru_cache(maxsize=4)
+def get_chat_model(*, model: str | None = None, max_retries: int | None = None) -> object:
     """
     Build the configured chat model client.
 
@@ -99,6 +108,7 @@ def get_chat_model(*, model: str | None = None) -> object:
     """
     settings = get_settings()
     model_name = settings.model if model is None else model
+    retries = max_retries if max_retries is not None else settings.max_retries
     provider = settings.provider
     if provider == "openai":
         _need("OPENAI_API_KEY")
@@ -106,7 +116,7 @@ def get_chat_model(*, model: str | None = None) -> object:
             model=model_name,
             temperature=settings.temperature,
             timeout=settings.timeout,
-            max_retries=settings.max_retries,
+            max_retries=retries,
         )
     elif provider == "openai_compatible":
         base_url = _need("OPENAI_COMPAT_BASE_URL")
@@ -117,7 +127,7 @@ def get_chat_model(*, model: str | None = None) -> object:
             api_key=SecretStr(api_key),
             temperature=settings.temperature,
             timeout=settings.timeout,
-            max_retries=settings.max_retries,
+            max_retries=retries,
         )
     elif provider == "azure_openai_v1":
         azure_base = _need("AZURE_OPENAI_BASE_URL")
@@ -128,7 +138,7 @@ def get_chat_model(*, model: str | None = None) -> object:
             api_key=azure_key,
             temperature=settings.temperature,
             timeout=settings.timeout,
-            max_retries=settings.max_retries,
+            max_retries=retries,
         )
     elif provider == "anthropic":
         _need("ANTHROPIC_API_KEY")
@@ -136,7 +146,7 @@ def get_chat_model(*, model: str | None = None) -> object:
             model_name=model_name,
             temperature=settings.temperature,
             timeout=settings.timeout,
-            max_retries=settings.max_retries,
+            max_retries=retries,
             stop=None,
         )
     elif provider in ("google", "gemini", "google_genai"):

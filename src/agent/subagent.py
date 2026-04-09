@@ -35,6 +35,56 @@ class InvestigationResult:
         }
 
 
+def _auto_fix(code: str, error: str) -> str | None:
+    """Try to fix common errors without an LLM call. Returns fixed code or None."""
+    import re as _re
+
+    # NameError: name 'X' is not defined → add missing import
+    m = _re.search(r"NameError: name '(\w+)' is not defined", error)
+    if m:
+        name = m.group(1)
+        imports = {
+            "np": "import numpy as np",
+            "pd": "import pandas as pd",
+            "plt": "import matplotlib.pyplot as plt",
+            "sns": "import seaborn as sns",
+            "stats": "from scipy import stats",
+            "pearsonr": "from scipy.stats import pearsonr",
+            "spearmanr": "from scipy.stats import spearmanr",
+            "ttest_ind": "from scipy.stats import ttest_ind",
+            "chi2_contingency": "from scipy.stats import chi2_contingency",
+            "mannwhitneyu": "from scipy.stats import mannwhitneyu",
+            "f_oneway": "from scipy.stats import f_oneway",
+            "norm": "from scipy.stats import norm",
+            "zscore": "from scipy.stats import zscore",
+            "linregress": "from scipy.stats import linregress",
+            "adfuller": "from statsmodels.tsa.stattools import adfuller",
+            "OLS": "import statsmodels.api as sm",
+            "sm": "import statsmodels.api as sm",
+        }
+        if name in imports:
+            return imports[name] + "\n" + code
+
+    # KeyError: column name not found → try fuzzy match
+    m = _re.search(r"KeyError: ['\"](.+?)['\"]", error)
+    if m:
+        bad_col = m.group(1)
+        # Can't fix without knowing all columns — return None to let LLM handle
+        return None
+
+    # ValueError: could not convert string to float → add .dropna() or numeric coercion
+    if "could not convert string to float" in error:
+        return code.replace(".values", ".dropna().values").replace(
+            "df[", "pd.to_numeric(df["
+        ).replace(".dropna()", "], errors='coerce').dropna()")
+
+    # ModuleNotFoundError → wrap in try/except with fallback
+    if "ModuleNotFoundError" in error or "No module named" in error:
+        return f"try:\n    {code.replace(chr(10), chr(10) + '    ')}\nexcept ImportError:\n    print('Module not available, skipping')"
+
+    return None
+
+
 def run_subagent(
     hypothesis_id: str,
     hypothesis_title: str,
@@ -50,6 +100,7 @@ def run_subagent(
     kernel_id: str | None = None,
     notebook_id: str = "main",
     kg_context: str = "",
+    deadline: float = 0,
 ) -> InvestigationResult:
     """
     Investigate a hypothesis by writing and executing notebook cells.
@@ -65,6 +116,7 @@ def run_subagent(
     :param execute_code: callback to execute code in kernel
     :param cell_counter: shared mutable counter for cell IDs
     :param max_cells: maximum cells this subagent can write
+    :param deadline: absolute time.time() by which this subagent must finish (0 = no limit)
     """
     result = InvestigationResult(
         hypothesis_id=hypothesis_id,
@@ -80,6 +132,8 @@ def run_subagent(
         cell_counter[0] += 1
         return f"{hypothesis_id}_cell_{cell_counter[0]}"
 
+    _first_cell_executed = [False]
+
     def _write_and_execute(
         code: str,
         cell_type: str = "code",
@@ -88,6 +142,14 @@ def run_subagent(
         overwrite: bool = False,
     ) -> tuple[str, list[dict], str | None]:
         """Write a cell, execute it, stream events, return (cell_id, outputs, error)."""
+        # Prepend safe imports only to the FIRST code cell (not every cell)
+        if cell_type == "code" and not overwrite and not _first_cell_executed[0]:
+            code = (
+                "import numpy as np\nimport pandas as pd\n"
+                "import matplotlib.pyplot as plt\n"
+                "import warnings; warnings.filterwarnings('ignore')\n"
+            ) + code
+            _first_cell_executed[0] = True
         cell_id = cell_id or _next_cell_id()
         replacement = overwrite and cell_id is not None
         if replacement:
@@ -108,7 +170,8 @@ def run_subagent(
 
         push_event(session_id, {"type": "cell_executing", "cell_id": cell_id, "notebook_id": notebook_id})
         exec_id = kernel_id if kernel_id else session_id
-        outputs, error = execute_code(exec_id, code, 60, cell_id=cell_id)
+        cell_timeout = min(30, int(_time_left())) if deadline else 30
+        outputs, error = execute_code(exec_id, code, max(cell_timeout, 10), cell_id=cell_id)
 
         if error:
             push_event(session_id, {
@@ -147,30 +210,38 @@ def run_subagent(
                 parts.append("[plot generated]")
         return "\n".join(parts)
 
+    def _time_left() -> float:
+        """Seconds remaining until deadline (inf if no deadline)."""
+        if not deadline:
+            return float("inf")
+        return max(0, deadline - time.time())
+
+    def _past_deadline() -> bool:
+        return deadline > 0 and time.time() >= deadline
+
     # --- Adaptive investigation loop ---
+    # Each step: LLM generates ONE cell → execute → feed output back → LLM decides next.
+    # Budget: up to max_cells steps (default 5). Each step sees all previous output.
     try:
-        from src.config.config import get_chat_model
+        from src.config.config import get_chat_model, get_subagent_model
         from langchain_core.messages import SystemMessage, HumanMessage
 
-        llm = get_chat_model()
+        llm = get_chat_model(model=get_subagent_model(), max_retries=1)
 
-        system_prompt = f"""You are investigating a data hypothesis step by step. You write ONE Python code cell at a time, see its output, then decide the next step.
+        system_prompt = f"""You are investigating a data hypothesis step by step. Write ONE Python code cell at a time, see its output, then decide the next step.
 
 Available columns: [{col_list}]
 Relevant columns: [{relevant_str}]
 Time column: {time_col or 'none'}
 Variable `df` is already loaded.
-
-{f"Previous findings from other investigations (build on these, don't repeat):" + chr(10) + kg_context if kg_context else ""}
+{f"Previous findings (don't repeat): " + kg_context[:500] if kg_context else ""}
 
 Rules:
 - Write ONE code cell per response
 - Use ONLY columns from the available list
 - Include matplotlib plots where relevant (always plt.show())
-- When plotting, also call emit_plot_spec(...) with chart_family, semantic_intent, axis roles
 - Print findings clearly with numbers
 - Include statistical tests where appropriate (scipy.stats)
-- A good investigation has: (1) data prep, (2) visualization, (3) statistical test, (4) conclusion print
 
 Respond with JSON (no markdown fencing):
 {{"code": "python code for ONE cell", "reasoning": "why this step", "done": false}}
@@ -186,6 +257,10 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
         cells_executed = 0
 
         for step in range(max_cells):
+            if _past_deadline():
+                _LOG.warning("Subagent %s hit deadline at step %d", hypothesis_id, step+1)
+                break
+
             push_event(session_id, {
                 "type": "thinking",
                 "content": f"Investigation step {step+1}/{max_cells} for: {hypothesis_title}" + (
@@ -194,7 +269,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                 "notebook_id": notebook_id,
             })
 
-            # Ask LLM for next cell
             try:
                 step_response = llm.invoke(conversation)
                 step_text = step_response.content.strip()
@@ -206,7 +280,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
 
                 step_data = json.loads(step_text)
                 code = step_data.get("code", "")
-                reasoning = step_data.get("reasoning", "")
                 is_done = step_data.get("done", False)
             except Exception as exc:
                 _LOG.warning("Subagent step %d LLM failed: %s", step+1, exc)
@@ -215,7 +288,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             if not code:
                 break
 
-            # Execute the cell
             cell_id, outputs, error = _write_and_execute(code)
             cells_executed += 1
 
@@ -223,26 +295,52 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                 output_text = _extract_text(outputs)
                 all_outputs.append(output_text)
 
-                # Build feedback for LLM including text + image descriptions
-                feedback = f"Cell {step+1} output:\n{output_text[:1000]}"
-                has_plot = any(
-                    o.get("data", {}).get("image/png")
-                    for o in outputs
-                )
-                if has_plot:
-                    feedback += "\n[A matplotlib plot was generated]"
+                # Build multimodal feedback — include plot image if one was generated
+                feedback_text = f"Cell {step+1} output:\n{output_text[:1000]}"
+                plot_b64 = None
+                for o in outputs:
+                    img = o.get("data", {}).get("image/png")
+                    if img:
+                        plot_b64 = img
+                        break
 
-                # Add assistant response + output to conversation
                 conversation.append(step_response)
                 if is_done:
                     break
-                conversation.append(HumanMessage(content=f"{feedback}\n\nWhat should the next analysis step be? (step {step+2}/{max_cells})"))
+
+                if plot_b64:
+                    # Multimodal feedback — LLM sees the plot + text
+                    conversation.append(HumanMessage(content=[
+                        {"type": "text", "text": f"{feedback_text}\n\nWhat should the next analysis step be? (step {step+2}/{max_cells})"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{plot_b64}", "detail": "low"}},
+                    ]))
+                else:
+                    conversation.append(HumanMessage(content=f"{feedback_text}\n\nWhat should the next analysis step be? (step {step+2}/{max_cells})"))
             else:
-                # Try to fix the error
+                # Try auto-fix first (instant), then LLM fix
+                fixed = _auto_fix(code, error)
+                if fixed and fixed != code:
+                    push_event(session_id, {
+                        "type": "backtrack",
+                        "reason": f"Auto-fixing: {error[:60]}",
+                        "cell_id": cell_id,
+                        "notebook_id": notebook_id,
+                    })
+                    _, fix_outputs, fix_error = _write_and_execute(fixed, cell_id=cell_id, overwrite=True)
+                    if not fix_error:
+                        output_text = _extract_text(fix_outputs)
+                        all_outputs.append(output_text)
+                        conversation.append(step_response)
+                        conversation.append(HumanMessage(content=f"Cell {step+1} output (after auto-fix):\n{output_text[:1000]}\n\nWhat next? (step {step+2}/{max_cells})"))
+                        continue
+
+                # LLM fix fallback
+                if _time_left() < 20:
+                    _LOG.warning("Subagent %s skipping LLM fix — low on time", hypothesis_id)
+                    continue
                 try:
-                    context_str = "\n".join(all_outputs[-3:]) if all_outputs else "No previous outputs."
                     fix_response = llm.invoke([
-                        SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Previous outputs:\n{context_str}\n\nRespond with ONLY corrected code."),
+                        SystemMessage(content=f"Fix this Python error. Available columns: [{col_list}]. Respond with ONLY corrected code."),
                         HumanMessage(content=f"Error: {error}\nOriginal code:\n{code}"),
                     ])
                     fixed_code = fix_response.content.strip()
@@ -253,13 +351,11 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                         fixed_code = fixed_code.strip()
                     push_event(session_id, {
                         "type": "backtrack",
-                        "reason": f"Correcting: {error[:100]}",
+                        "reason": f"LLM fixing: {error[:80]}",
                         "cell_id": cell_id,
                         "notebook_id": notebook_id,
                     })
-                    _, fix_outputs, fix_error = _write_and_execute(
-                        fixed_code, cell_id=cell_id, overwrite=True,
-                    )
+                    _, fix_outputs, fix_error = _write_and_execute(fixed_code, cell_id=cell_id, overwrite=True)
                     if not fix_error:
                         output_text = _extract_text(fix_outputs)
                         all_outputs.append(output_text)
@@ -267,27 +363,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                         conversation.append(HumanMessage(content=f"Cell {step+1} output (after fix):\n{output_text[:1000]}\n\nWhat next? (step {step+2}/{max_cells})"))
                 except Exception as fix_exc:
                     _LOG.warning("Subagent error fix failed: %s", fix_exc)
-
-        # Ensure at least one plot was generated — inject if not
-        has_any_plot = bool(result.plot_cell_ids)
-        if not has_any_plot and relevant_cols and cells_executed < max_cells:
-            col = relevant_cols[0]
-            if len(relevant_cols) >= 2:
-                col2 = relevant_cols[1]
-                plot_code = (
-                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
-                    f'ax.scatter(df["{col}"].dropna(), df["{col2}"].dropna(), alpha=0.5, s=20)\n'
-                    f'ax.set_xlabel("{col}")\nax.set_ylabel("{col2}")\n'
-                    f'ax.set_title("{hypothesis_title}")\nplt.tight_layout()\nplt.show()'
-                )
-            else:
-                plot_code = (
-                    f'fig, ax = plt.subplots(figsize=(10, 6))\n'
-                    f'ax.hist(df["{col}"].dropna(), bins=30, edgecolor="black", alpha=0.7)\n'
-                    f'ax.set_xlabel("{col}")\nax.set_title("{hypothesis_title}")\n'
-                    f'plt.tight_layout()\nplt.show()'
-                )
-            _write_and_execute(plot_code)
 
     except Exception as exc:
         _LOG.warning("Subagent adaptive loop failed: %s", exc)
@@ -297,45 +372,71 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             _write_and_execute(f'print(df["{col}"].describe())')
             all_outputs.append(f"Described {col}")
 
-    # --- Synthesize conclusion with vision ---
+    # --- Synthesize conclusion ---
     combined_output = "\n---\n".join(all_outputs[:5])
+    if _past_deadline():
+        _LOG.warning("Subagent %s hit deadline before conclusion synthesis", hypothesis_id)
+        result.finding = f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps but ran out of time."
+        result.confidence = 0.2
+        return result
+
+    push_event(session_id, {
+        "type": "thinking",
+        "content": f"Synthesizing conclusion for: {hypothesis_title} ({len(all_outputs)} evidence steps, {len(result.images)} plots)",
+        "notebook_id": notebook_id,
+    })
+
+    img_count = 0
     try:
         from src.config.config import get_chat_model
         from langchain_core.messages import SystemMessage, HumanMessage
 
         llm = get_chat_model()
 
-        # Build multimodal content with text + plot images
-        content_parts = [
+        conclusion_prompt = (
+            "You are concluding a data investigation. Based on the text evidence"
+            " AND any plots shown, write ONE specific, quantitative paragraph about"
+            " what was found. Include numbers. If the hypothesis was confirmed, say"
+            " so with evidence. If refuted, say so. If plots are shown, describe"
+            " what visual patterns you see (clusters, trends, outliers, regime changes)."
+            " Format with markdown. For math notation, always use proper LaTeX delimiters:"
+            " $x$ for inline math (e.g., $r = 0.95$, $p < 0.05$, $\\Delta$, $\\chi^2$)."
+            " Never write raw LaTeX without $ delimiters."
+        )
+
+        # Build multimodal content: text + up to 2 plots (detail=low for speed)
+        _LOG.info("Subagent %s: synthesizing conclusion (with %d plot images)", hypothesis_id, len(result.images))
+        content_parts: list = [
             {"type": "text", "text": (
                 f"Hypothesis: {hypothesis_title}\n\n"
                 f"Evidence from {len(all_outputs)} analysis steps:\n{combined_output[:3000]}"
             )}
         ]
-        # Add up to 3 plot images for vision analysis
-        img_count = 0
-        for cell_id, imgs in result.images.items():
+        for cell_id_img, imgs in result.images.items():
             for img_b64 in imgs:
-                if img_count >= 3:
+                if img_count >= 5:
                     break
                 content_parts.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"},
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "low"},
                 })
                 img_count += 1
-            if img_count >= 3:
+            if img_count >= 2:
                 break
 
-        conclusion_response = llm.invoke([
-            SystemMessage(content=(
-                "You are concluding a data investigation. Based on the text evidence AND any plots shown, "
-                "write ONE specific, quantitative sentence about what was found. Include numbers. "
-                "If the hypothesis was confirmed, say so with evidence. If refuted, say so. "
-                "If plots are shown, reference what you see in them."
-            )),
-            HumanMessage(content=content_parts),
-        ])
+        # Single call — if images present it's multimodal, otherwise just text
+        if img_count > 0:
+            conclusion_response = llm.invoke([
+                SystemMessage(content=conclusion_prompt),
+                HumanMessage(content=content_parts),
+            ])
+        else:
+            conclusion_response = llm.invoke([
+                SystemMessage(content=conclusion_prompt),
+                HumanMessage(content=content_parts[0]["text"]),
+            ])
         result.finding = conclusion_response.content.strip()
+        _LOG.info("Subagent %s: conclusion done (vision=%s): %s", hypothesis_id, img_count > 0, result.finding[:80])
 
         # Extract p-values from outputs for confidence scoring
         from src.agent.knowledge_graph import compute_finding_confidence, extract_p_values
@@ -343,7 +444,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
         p_vals = extract_p_values(all_text)
         min_p = min(p_vals) if p_vals else None
 
-        # Try to extract sample size
         import re
         n_match = re.search(r'(?:n|N|rows|observations)\s*[=:]\s*([0-9,]+)', all_text)
         sample_n = int(n_match.group(1).replace(',', '')) if n_match else 100
@@ -365,6 +465,11 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             result.finding = f"Could not investigate '{hypothesis_title}' due to errors."
         result.confidence = 0.15
 
+    push_event(session_id, {
+        "type": "thinking",
+        "content": f"Conclusion ready for: {hypothesis_title} (confidence: {result.confidence:.0%})",
+        "notebook_id": notebook_id,
+    })
     _LOG.info("Subagent %s complete: %s (confidence=%.2f)",
               hypothesis_id, result.finding[:80], result.confidence)
     return result

@@ -26,6 +26,7 @@ type StreamEvent =
   | { type: "subagents_returned"; notebook_id?: string; loop_number?: number; results_count?: number }
   | { type: "loop_start"; loop_number?: number; total_loops?: number }
   | { type: "loop_complete"; loop_number?: number }
+  | { type: "accumulation_progress"; step?: number; total?: number; label?: string; notebook_id?: string }
   | { type: "notebook_clear"; notebook_id?: string }
   | { type: "notebook_focus"; notebook_id?: string }
   | { type: "complete"; summary?: string };
@@ -196,17 +197,24 @@ export function useAgentStream(sessionId: string) {
             store.addChatAction(data.detail || "Action", data.action || "unknown");
             break;
 
-          case "phase_transition":
-            store.setPipelineRunning(true);
+          case "phase_transition": {
+            // Chat investigations (notebook_id starts with "chat_") should NOT
+            // set pipelineRunning — that hides the story pane with a spinner.
+            const phaseNotebookId = data.notebook_id || "main";
+            const isChatInvestigation = phaseNotebookId.startsWith("chat_");
+            if (!isChatInvestigation) {
+              store.setPipelineRunning(true);
+            }
             store.setCurrentPhase(data.phase || "");
             store.setAgentActivity("thinking", data.phase || "", {
               hypothesisId: data.notebook_id || undefined,
-              notebookId: data.notebook_id || "main",
+              notebookId: phaseNotebookId,
             });
             if (data.notebook_id) {
               store.addHypothesisGroup(data.notebook_id, data.phase || "");
             }
             break;
+          }
 
           case "backtrack":
             store.setLatestThinking(`⟲ Correcting: ${data.reason}`);
@@ -283,11 +291,22 @@ export function useAgentStream(sessionId: string) {
             store.setAgentActivity("thinking", `${(data as any).results_count || 0} investigations complete. Compiling...`, { notebookId: "main" });
             break;
 
+          case "accumulation_progress": {
+            const ap = data as any;
+            const pct = ap.total ? Math.round((ap.step / ap.total) * 100) : 0;
+            store.setLatestThinking(`[${ap.step}/${ap.total}] ${ap.label || "Processing..."}`);
+            store.setAgentActivity("generating", `Accumulating results (${pct}%): ${ap.label || ""}`, { notebookId: "main" });
+            // Expose progress for the progress bar
+            (store as any).accumulationProgress = { step: ap.step, total: ap.total, label: ap.label };
+            break;
+          }
+
           case "loop_start":
             store.setCurrentPhase(`Investigation Loop ${data.loop_number || 1}/${data.total_loops || 1}`);
             break;
 
           case "loop_complete":
+            (store as any).accumulationProgress = null;
             store.setAgentActivity("thinking", `Loop ${data.loop_number} complete, analyzing results...`, { notebookId: "main" });
             break;
 

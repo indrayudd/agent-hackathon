@@ -119,24 +119,25 @@ def interpret_output(output_text: str, phase: str, images: list[str] | None = No
         if has_images:
             _LOG.info("Vision analysis: phase=%s, images=%d", phase, len(images))
 
-        # Build multimodal content
+        # Build multimodal content — text + plots in one call
         content_parts: list[dict] = []
         content_parts.append({
             "type": "text",
-            "text": f"Phase: {phase}\nOutput:\n{output_text[:1500]}",
+            "text": f"Phase: {phase}\nOutput:\n{output_text[:2000]}",
         })
         if images:
-            for img_b64 in images:
+            for img_b64 in images[:2]:  # cap at 2 images for speed
                 content_parts.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"},
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "low"},
                 })
 
         system_prompt = (
             "Write ONE concise sentence about the key finding from this output. "
             "If there are plots, describe what visual patterns you see (trends, clusters, outliers, "
             "distributions, shape). Be specific with numbers. "
-            "Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings."
+            "Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings. "
+            "Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters."
         )
         if has_images:
             system_prompt += (
