@@ -510,8 +510,13 @@ def run_agent(
 
     cell_counters = []  # Track for final cell_count update
 
+    _LOG.info("Starting investigation loops: max_loops=%d, max_subagents=%d, columns=%s",
+              max_loops, max_subagents, state.columns[:5])
+
     for loop_num in range(1, max_loops + 1):
         state.loop_count = loop_num
+        _LOG.info("=== LOOP %d/%d START === columns=%d, findings=%d",
+                  loop_num, max_loops, len(state.columns), len(state.findings))
 
         push_event(session_id, {
             "type": "loop_start",

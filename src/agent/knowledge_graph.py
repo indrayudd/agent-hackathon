@@ -251,10 +251,17 @@ class KnowledgeGraph:
         return hashlib.sha256(key.encode()).hexdigest()
 
     def find_similar_hypothesis(
-        self, hypothesis: str, threshold: float = 0.5
+        self, hypothesis, threshold: float = 0.5
     ) -> KnowledgeNode | None:
         """Column-overlap ratio between hypothesis words and node metadata columns + text."""
-        hyp_words = set(hypothesis.lower().split())
+        # Accept either a string or a Hypothesis object with .title and .relevant_cols
+        if hasattr(hypothesis, 'relevant_cols'):
+            hyp_text = hypothesis.title
+            hyp_cols = set(c.lower() for c in (hypothesis.relevant_cols or []))
+        else:
+            hyp_text = str(hypothesis)
+            hyp_cols = set()
+        hyp_words = set(hyp_text.lower().split()) | hyp_cols
         best_node: KnowledgeNode | None = None
         best_score = 0.0
         for node in self.nodes.values():
