@@ -59,7 +59,7 @@ export function useAgentStream(sessionId: string) {
         switch (data.type) {
           case "thinking":
             store.setLatestThinking(data.content || "");
-            store.setAgentActivity("thinking", data.content || "Thinking...");
+            store.setAgentActivity("thinking", data.content || "Thinking...", { notebookId: "main" });
             break;
 
           case "cell_write": {
@@ -87,6 +87,7 @@ export function useAgentStream(sessionId: string) {
               cellId: data.cell_id,
               cellType: (data.cell_type as "code" | "markdown") || "code",
               hypothesisId: hypId,
+              notebookId,
             });
 
             // Track hypothesis grouping
@@ -106,7 +107,7 @@ export function useAgentStream(sessionId: string) {
               store.setCellExecuting(data.cell_id, true);
             }
             // For investigation notebooks, the executing state is handled by the tab badge
-            store.setAgentActivity("executing", "Running cell...", { cellId: data.cell_id });
+            store.setAgentActivity("executing", "Running cell...", { cellId: data.cell_id, notebookId: notebookId_exec });
             break;
           }
 
@@ -157,6 +158,7 @@ export function useAgentStream(sessionId: string) {
             store.setAgentActivity("fixing", `Fixing: ${data.error || "Unknown error"}`, {
               cellId: data.cell_id,
               cellType: "code",
+              notebookId: notebookId_err,
             });
             break;
           }
@@ -166,6 +168,7 @@ export function useAgentStream(sessionId: string) {
             store.setAgentActivity("fixing", "Overwrote cell with corrected code", {
               cellId: data.cell_id,
               cellType: "code",
+              notebookId: "main",
             });
             break;
 
@@ -173,6 +176,7 @@ export function useAgentStream(sessionId: string) {
             store.setAgentActivity("backtracking", "Removed failed cell before retry", {
               cellId: data.cell_id,
               cellType: "code",
+              notebookId: "main",
             });
             store.deleteCell(data.cell_id);
             break;
@@ -184,6 +188,7 @@ export function useAgentStream(sessionId: string) {
           case "chat_action":
             store.setAgentActivity("generating", data.detail || "User action", {
               cellId: data.cell_id,
+              notebookId: "main",
             });
             store.addChatAction(data.detail || "Action", data.action || "unknown");
             break;
@@ -193,6 +198,7 @@ export function useAgentStream(sessionId: string) {
             store.setCurrentPhase(data.phase || "");
             store.setAgentActivity("thinking", data.phase || "", {
               hypothesisId: data.notebook_id || undefined,
+              notebookId: data.notebook_id || "main",
             });
             if (data.notebook_id) {
               store.addHypothesisGroup(data.notebook_id, data.phase || "");
@@ -204,6 +210,7 @@ export function useAgentStream(sessionId: string) {
             store.setAgentActivity("backtracking", `Correcting: ${data.reason || "retrying failed cell"}`, {
               cellId: data.cell_id,
               cellType: "code",
+              notebookId: "main",
             });
             break;
 
@@ -211,7 +218,7 @@ export function useAgentStream(sessionId: string) {
             store.setPipelineRunning(false);
             store.setCurrentPhase("");
             store.setLatestThinking("");
-            store.setAgentActivity("complete", `Investigation complete: ${data.finding || ""}`);
+            store.setAgentActivity("complete", `Investigation complete: ${data.finding || ""}`, { notebookId: "main" });
             break;
 
           case "notebook_clear":
@@ -228,6 +235,7 @@ export function useAgentStream(sessionId: string) {
             }
             store.setAgentActivity("thinking", `Starting: ${data.title || ""}`, {
               hypothesisId: data.hypothesis_id,
+              notebookId: data.notebook_id || "main",
             });
             break;
 
@@ -237,6 +245,7 @@ export function useAgentStream(sessionId: string) {
             }
             store.setAgentActivity("complete", `Done: ${(data.finding || "").slice(0, 80)}`, {
               hypothesisId: data.hypothesis_id,
+              notebookId: data.notebook_id || "main",
             });
             break;
 
@@ -246,15 +255,16 @@ export function useAgentStream(sessionId: string) {
             }
             store.setAgentActivity("fixing", "Investigation timed out", {
               hypothesisId: data.hypothesis_id,
+              notebookId: (data as any).notebook_id || "main",
             });
             break;
 
           case "subagents_dispatched":
-            store.setAgentActivity("thinking", `Dispatched ${(data as any).count || 0} subagents...`);
+            store.setAgentActivity("thinking", `Dispatched ${(data as any).count || 0} subagents...`, { notebookId: "main" });
             break;
 
           case "subagents_returned":
-            store.setAgentActivity("thinking", `${(data as any).results_count || 0} investigations complete. Compiling...`);
+            store.setAgentActivity("thinking", `${(data as any).results_count || 0} investigations complete. Compiling...`, { notebookId: "main" });
             break;
 
           case "loop_start":
@@ -262,14 +272,16 @@ export function useAgentStream(sessionId: string) {
             break;
 
           case "loop_complete":
-            store.setAgentActivity("thinking", `Loop ${data.loop_number} complete, analyzing results...`);
+            store.setAgentActivity("thinking", `Loop ${data.loop_number} complete, analyzing results...`, { notebookId: "main" });
             break;
 
           case "complete":
+            // Guard: only handle once (ignore duplicate complete events)
+            if (!store.pipelineRunning) break;
             store.setPipelineRunning(false);
             store.setCurrentPhase("");
             store.setLatestThinking("");
-            store.setAgentActivity("complete", "EDA complete");
+            store.setAgentActivity("complete", "EDA complete", { notebookId: "main" });
             chat.addAgentMessage(
               "EDA complete! Switch to the **Story** tab for the full narrative report, or ask me questions about the data.",
               "text",

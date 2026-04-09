@@ -286,9 +286,20 @@ function EmptyState() {
 
 export default function AgentActivityBadge() {
   const log = useNotebookStore((s) => s.activityLog);
+  const activeNotebookId = useNotebookStore((s) => s.activeNotebookId);
   const [expanded, setExpanded] = useState(false);
 
-  if (log.length === 0) {
+  // Filter entries by active notebook tab
+  const filteredLog = log.filter((entry) => {
+    if (activeNotebookId === "main") {
+      // Main tab: show orchestrator events (main or untagged)
+      return !entry.notebookId || entry.notebookId === "main";
+    }
+    // Agent tab: show entries for this specific notebook
+    return entry.notebookId === activeNotebookId;
+  });
+
+  if (filteredLog.length === 0) {
     return (
       <div className="mt-4">
         <EmptyState />
@@ -296,7 +307,7 @@ export default function AgentActivityBadge() {
     );
   }
 
-  const entries = log.filter((entry) => entry.detail.trim().length > 0);
+  const entries = filteredLog.filter((entry) => entry.detail.trim().length > 0);
   const condensedEntries = entries.slice(-6);
 
   const renderEntry = (entry: ActivityLogEntry, index: number, total: number) => {
@@ -392,7 +403,35 @@ export default function AgentActivityBadge() {
             </div>
             <div className="overflow-y-auto px-5 py-4">
               <div className="space-y-1.5">
-                {entries.map((entry, index) => renderEntry(entry, index, entries.length))}
+                {(() => {
+                  const allEntries = log.filter((e) => e.detail.trim().length > 0);
+                  // Group by notebookId for section headers
+                  const groups: { notebookId: string; entries: ActivityLogEntry[] }[] = [];
+                  let currentGroup: string | null = null;
+                  for (const entry of allEntries) {
+                    const nbId = entry.notebookId || "main";
+                    if (nbId !== currentGroup) {
+                      currentGroup = nbId;
+                      groups.push({ notebookId: nbId, entries: [entry] });
+                    } else {
+                      groups[groups.length - 1].entries.push(entry);
+                    }
+                  }
+                  let globalIdx = 0;
+                  return groups.map((group) => (
+                    <div key={`${group.notebookId}-${group.entries[0]?.id}`}>
+                      {group.notebookId !== "main" && (
+                        <div className="mt-3 mb-1 px-1">
+                          <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-primary/70">{group.notebookId}</span>
+                        </div>
+                      )}
+                      {group.entries.map((entry) => {
+                        const idx = globalIdx++;
+                        return renderEntry(entry, idx, allEntries.length);
+                      })}
+                    </div>
+                  ));
+                })()}
               </div>
             </div>
           </div>
