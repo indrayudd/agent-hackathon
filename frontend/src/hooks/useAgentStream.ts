@@ -19,6 +19,11 @@ type StreamEvent =
   | { type: "phase_transition"; phase?: string; notebook_id?: string }
   | { type: "backtrack"; reason?: string; cell_id?: string }
   | { type: "chat_investigation_complete"; hypothesis_id?: string; finding?: string; confidence?: number }
+  | { type: "subagent_start"; hypothesis_id?: string; notebook_id?: string; title?: string }
+  | { type: "subagent_complete"; hypothesis_id?: string; notebook_id?: string; finding?: string; confidence?: number }
+  | { type: "subagent_timeout"; hypothesis_id?: string }
+  | { type: "loop_start"; loop_number?: number; total_loops?: number }
+  | { type: "loop_complete"; loop_number?: number }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -174,6 +179,35 @@ export function useAgentStream(sessionId: string) {
             store.setCurrentPhase("");
             store.setLatestThinking("");
             store.setAgentActivity("complete", `Investigation complete: ${data.finding || ""}`);
+            break;
+
+          case "subagent_start":
+            store.setAgentActivity("thinking", `Starting investigation: ${data.title || ""}`, {
+              hypothesisId: data.hypothesis_id,
+            });
+            if (data.notebook_id && data.title) {
+              store.addHypothesisGroup(data.notebook_id, data.title);
+            }
+            break;
+
+          case "subagent_complete":
+            store.setAgentActivity("complete", `Investigation complete: ${(data.finding || "").slice(0, 80)}`, {
+              hypothesisId: data.hypothesis_id,
+            });
+            break;
+
+          case "subagent_timeout":
+            store.setAgentActivity("fixing", "Investigation timed out", {
+              hypothesisId: data.hypothesis_id,
+            });
+            break;
+
+          case "loop_start":
+            store.setCurrentPhase(`Investigation Loop ${data.loop_number || 1}/${data.total_loops || 1}`);
+            break;
+
+          case "loop_complete":
+            store.setAgentActivity("thinking", `Loop ${data.loop_number} complete, analyzing results...`);
             break;
 
           case "complete":
