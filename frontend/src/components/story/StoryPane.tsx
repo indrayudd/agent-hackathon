@@ -146,21 +146,27 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const cellCount = cells.length;
   const storyGeneratedAt = generatedAt;
 
-  // Detect changes: only flag when cells change AFTER story has loaded and stabilized
-  const prevCellCountRef = useRef<number | null>(null);
-  const storyLoadedRef = useRef(false);
+  // Detect changes: only flag when cells change AFTER pipeline completes and stabilizes
+  const baselineCellCountRef = useRef<number | null>(null);
+  const baselineSetRef = useRef(false);
+
   useEffect(() => {
-    if (storyGeneratedAt && !storyLoadedRef.current) {
-      // Story just loaded — snapshot current cell count as baseline, don't flag
-      storyLoadedRef.current = true;
-      prevCellCountRef.current = cellCount;
-      return;
+    // Set baseline when pipeline finishes (not on story load — cells may still be streaming)
+    if (!pipelineRunning && storyGeneratedAt && !baselineSetRef.current && cellCount > 0) {
+      // Delay baseline to let final events settle
+      const timer = setTimeout(() => {
+        baselineCellCountRef.current = cellCount;
+        baselineSetRef.current = true;
+      }, 3000);
+      return () => clearTimeout(timer);
     }
-    if (storyLoadedRef.current && prevCellCountRef.current !== null && cellCount !== prevCellCountRef.current) {
-      setChangesDetected(true);
+    // Only detect changes after baseline is set and pipeline is not running
+    if (baselineSetRef.current && !pipelineRunning && baselineCellCountRef.current !== null) {
+      if (cellCount !== baselineCellCountRef.current) {
+        setChangesDetected(true);
+      }
     }
-    prevCellCountRef.current = cellCount;
-  }, [cellCount, storyGeneratedAt]);
+  }, [cellCount, storyGeneratedAt, pipelineRunning]);
 
   useEffect(() => {
     if (!title && !loading && !pipelineRunning) {

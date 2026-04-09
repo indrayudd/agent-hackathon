@@ -326,11 +326,8 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
         "title": hyp.title,
     })
 
-    # Switch UI to the new notebook tab
-    push_event(session_id, {
-        "type": "notebook_focus",
-        "notebook_id": chat_notebook_id,
-    })
+    # Note: don't auto-switch to chat notebook tab — let the user choose to view it.
+    # The tab will appear in the sidebar/tab bar via the subagent_start event.
 
     # Ensure kernel has data
     if not is_kernel_alive(session_id):
