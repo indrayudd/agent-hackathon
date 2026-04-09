@@ -58,10 +58,20 @@ class KernelPoolManager:
         return execute_code(kernel_id, code, timeout=timeout, cell_id=cell_id)
 
     def inject_dataset_preamble(self, kernel_id: str, session_dir: str) -> None:
-        """Load the cached parquet into a subagent kernel."""
+        """Load the cached parquet into a subagent kernel.
+
+        session_dir should be the PARENT session's uploads dir.
+        We also override AGENTICEDA_SESSION_DIR so plot_specs.jsonl
+        goes to the parent session, not the sub-kernel's own dir.
+        """
+        # Derive parent session dir from the uploads path
+        parent_session_dir = str(pathlib.Path(session_dir).parent)
         code = (
+            "%matplotlib inline\n"
+            "import os\n"
+            f"os.environ['AGENTICEDA_SESSION_DIR'] = {repr(parent_session_dir)}\n"
             "import pandas as pd\nimport numpy as np\n"
-            "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n"
+            "import matplotlib.pyplot as plt\n"
             "import warnings\nwarnings.filterwarnings('ignore')\n"
             f"df = pd.read_parquet('{session_dir}/.cache/df_clean.parquet')\n"
             f"print(f'Loaded {{len(df)}} rows x {{len(df.columns)}} cols')"
