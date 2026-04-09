@@ -49,6 +49,7 @@ def run_subagent(
     max_cells: int = 5,
     kernel_id: str | None = None,
     notebook_id: str = "main",
+    kg_context: str = "",
 ) -> InvestigationResult:
     """
     Investigate a hypothesis by writing and executing notebook cells.
@@ -160,6 +161,8 @@ Available columns: [{col_list}]
 Relevant columns for this hypothesis: [{relevant_str}]
 Time column: {time_col or 'none'}
 Variable `df` is already loaded in the kernel.
+
+{f"Previous findings from other investigations (do NOT repeat these, build on them):" + chr(10) + kg_context if kg_context else ""}
 
 Rules:
 - Write at most {max_cells} code cells (as a JSON array of code strings)

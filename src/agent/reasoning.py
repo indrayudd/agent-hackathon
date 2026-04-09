@@ -126,7 +126,7 @@ def interpret_output(output_text: str, phase: str, images: list[str] | None = No
             "text": f"Phase: {phase}\nOutput:\n{output_text[:1500]}",
         })
         if images:
-            for img_b64 in images[:2]:
+            for img_b64 in images:
                 content_parts.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"},

@@ -253,6 +253,12 @@ export function useAgentStream(sessionId: string) {
             if (data.notebook_id) {
               store.setNotebookStatus(data.notebook_id, "complete");
             }
+            // For chat-triggered investigations (notebook_id starts with "chat_"), reset pipeline state
+            if (data.notebook_id && String(data.notebook_id).startsWith("chat_")) {
+              store.setPipelineRunning(false);
+              store.setCurrentPhase("");
+              store.setLatestThinking("");
+            }
             store.setAgentActivity("complete", `Done: ${(data.finding || "").slice(0, 80)}`, {
               hypothesisId: data.hypothesis_id,
               notebookId: data.notebook_id || "main",

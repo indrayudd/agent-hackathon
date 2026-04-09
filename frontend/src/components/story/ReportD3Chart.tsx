@@ -184,7 +184,6 @@ function renderLegendEntry(entry: LegendEntry, activeSeries?: string) {
 
   return (
     <span
-      key={entry.name}
       className="inline-flex items-center gap-2 rounded-full border border-outline-variant/30 bg-white/88 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600 shadow-sm backdrop-blur"
       style={{ opacity: active ? 1 : 0.62 }}
     >
@@ -1255,7 +1254,9 @@ export default function ReportD3Chart({
     >
       {legendEntries.length > 1 && (
         <div className="pointer-events-none absolute right-4 top-4 z-10 flex max-w-[56%] flex-wrap justify-end gap-2">
-          {legendEntries.map((entry) => renderLegendEntry(entry, activeSeries))}
+          {legendEntries.map((entry, idx) => (
+            <span key={`${entry.name}-${idx}`}>{renderLegendEntry(entry, activeSeries)}</span>
+          ))}
         </div>
       )}
 

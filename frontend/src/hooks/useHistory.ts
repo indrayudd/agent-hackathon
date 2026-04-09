@@ -22,6 +22,8 @@ export function useHistory(sessionId: string) {
         const data = await res.json();
         setVersions(data.versions || []);
       }
+    } catch {
+      // History endpoint may not be available — silently ignore
     } finally {
       setLoading(false);
     }
