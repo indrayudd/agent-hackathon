@@ -116,11 +116,22 @@ export default function SessionPage() {
       const container = findScrollContainer(prev);
       if (container) {
         scrollPositionsRef.current[prev] = container.scrollTop;
+        try { sessionStorage.setItem(`scroll_${sessionId}_${prev}`, String(container.scrollTop)); } catch {}
       }
       return tab;
     });
     useNotebookStore.getState().setActiveTab(tab);
-  }, [findScrollContainer]);
+  }, [findScrollContainer, sessionId]);
+
+  useEffect(() => {
+    // Restore scroll positions from sessionStorage on mount
+    for (const tab of ["notebook", "story", "history"]) {
+      try {
+        const saved = sessionStorage.getItem(`scroll_${sessionId}_${tab}`);
+        if (saved) scrollPositionsRef.current[tab] = parseInt(saved, 10);
+      } catch {}
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;

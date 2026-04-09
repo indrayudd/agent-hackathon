@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -141,6 +141,19 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportingMd, setExportingMd] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [changesDetected, setChangesDetected] = useState(false);
+
+  const cellCount = cells.length;
+  const storyGeneratedAt = generatedAt;
+
+  // Detect changes: if cells were added/removed after story was generated
+  const prevCellCountRef = useRef(cellCount);
+  useEffect(() => {
+    if (storyGeneratedAt && cellCount !== prevCellCountRef.current) {
+      setChangesDetected(true);
+    }
+    prevCellCountRef.current = cellCount;
+  }, [cellCount, storyGeneratedAt]);
 
   useEffect(() => {
     if (!title && !loading && !pipelineRunning) {
@@ -219,6 +232,7 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
       if (res.ok) {
         const data = await res.json();
         setStory(data);
+        setChangesDetected(false);
       }
     } catch {
       // ignore
@@ -356,19 +370,30 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
             <span>Story report</span>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleRegenerate}
-              disabled={regenerating}
-              className="flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1 text-xs font-body text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
-              title="Regenerate story from current notebook"
-            >
-              {regenerating ? (
-                <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-              ) : (
-                <span className="material-symbols-outlined text-sm">auto_fix_high</span>
+            <div className="relative">
+              <button
+                onClick={handleRegenerate}
+                disabled={regenerating}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-body transition-colors disabled:opacity-50 ${
+                  changesDetected
+                    ? "bg-green-50 text-green-700 border border-green-300 hover:bg-green-100"
+                    : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
+                }`}
+                title="Regenerate story from current notebook"
+              >
+                {regenerating ? (
+                  <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                ) : (
+                  <span className="material-symbols-outlined text-sm">auto_fix_high</span>
+                )}
+                {regenerating ? "Regenerating..." : "Regenerate"}
+              </button>
+              {changesDetected && !regenerating && (
+                <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] text-green-600 font-medium whitespace-nowrap">
+                  Changes detected!
+                </span>
               )}
-              {regenerating ? "Regenerating..." : "Regenerate"}
-            </button>
+            </div>
             <button
               onClick={() => handleExport("pdf")}
               disabled={exportingPdf}
