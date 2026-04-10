@@ -9,6 +9,7 @@ import pathlib
 import re
 import io
 import unicodedata
+import tempfile
 import textwrap
 from typing import Any
 
@@ -29,6 +30,21 @@ _LOG = logging.getLogger(__name__)
 router = APIRouter(tags=["story"])
 
 
+def atomic_write_json(path: pathlib.Path, data: dict) -> None:
+    """Write JSON atomically — write to temp file then rename (prevents corruption)."""
+    content = json.dumps(data, default=str, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.write(fd, content.encode())
+        os.close(fd)
+        os.replace(tmp, str(path))
+    except Exception:
+        os.close(fd) if not os.get_inheritable(fd) else None
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 def _load_story(session_id: str) -> dict:
     """Load story.json for a session, or raise 404."""
     try:
@@ -40,7 +56,11 @@ def _load_story(session_id: str) -> dict:
     if not story_file.exists():
         raise HTTPException(status_code=404, detail="Story not generated yet")
 
-    return json.loads(story_file.read_text())
+    try:
+        return json.loads(story_file.read_text())
+    except json.JSONDecodeError as exc:
+        _LOG.warning("Corrupt story.json for session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Story data is corrupted. Try regenerating.")
 
 
 def _default_plot_display(plot_type: str, index: int = 0) -> dict[str, Any]:
@@ -1261,7 +1281,7 @@ async def regenerate_story(session_id: str):
         story_data["knowledge_graph"] = kg.to_dict()
 
     story_path = session_dir / "story.json"
-    story_path.write_text(json.dumps(story_data, default=str, indent=2))
+    atomic_write_json(story_path, story_data)
 
     _LOG.info("Story regenerated for session %s: %d sections, kg=%s", session_id, len(sections), kg is not None)
 

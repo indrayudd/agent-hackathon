@@ -206,9 +206,8 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             if kg is not None:
                 story_data["knowledge_graph"] = kg.to_dict()
 
-            (session_dir / "story.json").write_text(
-                json.dumps(story_data, default=str, indent=2)
-            )
+            from backend.routers.story import atomic_write_json
+            atomic_write_json(session_dir / "story.json", story_data)
             _LOG.info("Story written: %d sections, narrative %d chars, kg=%s",
                       len(sections), len(narrative), kg is not None)
         except Exception as exc:
