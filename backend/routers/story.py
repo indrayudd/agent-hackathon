@@ -431,6 +431,21 @@ def _augment_story_plot_metadata(session_id: str, story: dict) -> dict:
                             )
                         )
 
+        # Filter to curated selection if available
+        selected_plots_list = section.get("selected_plots")
+        if selected_plots_list and plot_metadata:
+            selected_ids = {s["cell_id"] for s in selected_plots_list}
+            caption_map = section.get("plot_captions", {})
+            filtered = []
+            for p in plot_metadata:
+                src_id = p.get("source_cell_id", "")
+                if src_id in selected_ids:
+                    if src_id in caption_map:
+                        p["caption"] = caption_map[src_id]
+                        p["title"] = caption_map[src_id]
+                    filtered.append(p)
+            plot_metadata = filtered if filtered else plot_metadata[:3]
+
         if plot_metadata:
             section["plots"] = plot_metadata
 
@@ -1286,13 +1301,14 @@ async def regenerate_story(session_id: str):
         if not narrative:
             narrative = "Key findings: " + "; ".join(s.get("title", "") for s in sections[:10])
 
-    story_data = {
-        "title": f"EDA Report: {dataset_name}",
-        "executive_summary": narrative,
-        "sections": sections,
-        "generated_at": datetime.datetime.now().isoformat(),
-    }
+    from src.reporting.story_builder import build_curated_story
 
+    story_data = build_curated_story(
+        sections=sections,
+        executive_summary=narrative,
+        dataset_name=dataset_name,
+        max_plots_per_section=3,
+    )
     if kg is not None:
         story_data["knowledge_graph"] = kg.to_dict()
 

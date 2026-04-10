@@ -197,12 +197,14 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                 _LOG.warning("LLM narrative failed: %s", llm_exc)
                 narrative = "\n".join(f"- {c}" for c in conclusions)
 
-            story_data = {
-                "title": f"EDA Report: {os.path.basename(dataset_path)}",
-                "executive_summary": narrative,
-                "sections": sections,
-                "generated_at": datetime.datetime.now().isoformat(),
-            }
+            from src.reporting.story_builder import build_curated_story
+
+            story_data = build_curated_story(
+                sections=sections,
+                executive_summary=narrative,
+                dataset_name=os.path.basename(dataset_path),
+                max_plots_per_section=3,
+            )
             if kg is not None:
                 story_data["knowledge_graph"] = kg.to_dict()
 
