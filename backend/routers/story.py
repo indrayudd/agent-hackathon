@@ -1013,6 +1013,18 @@ def _tex_esc(text: str) -> str:
     # Strip markdown bold/italic
     text = text.replace("**", "").replace("*", "")
 
+    # Fix stray LaTeX commands outside $ delimiters (common LLM error)
+    # e.g., \text{foo} → foo, \bar{x} → x, \geq → >=, \times → x
+    import re as _re
+    def _fix_stray_latex(t: str) -> str:
+        t = _re.sub(r'\\text\{([^}]*)\}', r'\1', t)
+        t = _re.sub(r'\\bar\{([^}]*)\}', r'\1', t)
+        t = _re.sub(r'\\hat\{([^}]*)\}', r'\1', t)
+        t = t.replace('\\geq', '>=').replace('\\leq', '<=')
+        t = t.replace('\\times', 'x').replace('\\approx', '~')
+        t = t.replace('\\rho', 'rho').replace('\\chi', 'chi')
+        return t
+
     # Split on $...$ math blocks, escape only the non-math parts
     parts = re.split(r'(\$[^$]+\$)', text)
     result = []
@@ -1021,9 +1033,9 @@ def _tex_esc(text: str) -> str:
             # Math block — pass through unchanged
             result.append(part)
         else:
-            result.append(_tex_esc_raw(part))
+            # Fix stray LaTeX in non-math text, then escape
+            result.append(_tex_esc_raw(_fix_stray_latex(part)))
     return "".join(result)
-    return text
 
 
 def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:
@@ -1314,7 +1326,7 @@ async def regenerate_story(session_id: str):
         time_col = agent_state.get('time_col', 'N/A')
 
         resp = llm.invoke([
-            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points. Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters."),
+            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points. Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters. Never use emojis or special unicode symbols."),
             HumanMessage(content=f"Dataset: {dataset_name}\n{dataset_info}\nColumns: {cols}\nTime column: {time_col}\n\nKnowledge graph:\n{kg_context[:2000]}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
         ])
         narrative = resp.content.strip()

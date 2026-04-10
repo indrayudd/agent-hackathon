@@ -942,7 +942,8 @@ def run_agent(
                     "- Suggest what to investigate next\n"
                     "Be specific and quantitative. Do NOT use bullet points inside numbered items. "
                     "Format with markdown. For math notation, use proper LaTeX delimiters: $x$ for inline "
-                    "(e.g., $r = 0.95$, $p < 0.05$, $\\chi^2$). Never write raw LaTeX without $ delimiters."
+                    "(e.g., $r = 0.95$, $p < 0.05$, $\\chi^2$). Never write raw LaTeX without $ delimiters. "
+                    "Never use emojis or special unicode symbols."
                 )),
                 HumanMessage(content=(
                     f"Knowledge graph summary:\n{kg_context[:2000]}\n\n"

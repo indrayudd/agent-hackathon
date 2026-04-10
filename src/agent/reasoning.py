@@ -42,6 +42,7 @@ Rules:
 - Keep the fix focused on the error
 - If the corrected cell includes a plot, also emit emit_plot_spec(...) so the
   hidden report spec stays aligned with the visible chart
+- Never use emojis or special unicode symbols
 
 Respond with EXACTLY this JSON (no markdown fencing):
 {{"thinking": "what went wrong and how I'm fixing it", "code": "corrected python code", "cell_type": "code", "phase": "{current_phase}", "follow_up": false}}"""
@@ -63,6 +64,7 @@ Rules:
 - Most of the time, follow_up should be FALSE — only set true for real surprises
 - If you do generate a plot, also emit emit_plot_spec(...) with the hidden
   chart spec (family, intent, axis roles, and series/matrix data).
+- Never use emojis or special unicode symbols
 
 Respond with EXACTLY this JSON (no markdown fencing):
 {{"thinking": "brief reasoning", "code": "python code or empty", "cell_type": "code", "phase": "{current_phase}", "follow_up": false}}"""
@@ -137,7 +139,8 @@ def interpret_output(output_text: str, phase: str, images: list[str] | None = No
             "If there are plots, describe what visual patterns you see (trends, clusters, outliers, "
             "distributions, shape). Be specific with numbers. "
             "Do NOT repeat things like 'the dataset loaded' — only report genuinely informative findings. "
-            "Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters."
+            "Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters. "
+            "Never use emojis or special unicode symbols."
         )
         if has_images:
             system_prompt += (

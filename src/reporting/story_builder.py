@@ -55,7 +55,8 @@ def _generate_captions(
                 "You are writing figure captions for a data analysis report. "
                 "For each plot, write ONE specific caption (1-2 sentences) that describes "
                 "what the plot shows and what pattern is visible. Reference specific numbers "
-                "from the output where possible. Use $...$ for inline math.\n\n"
+                "from the output where possible. Use $...$ for inline math. "
+                "Never use emojis or special unicode symbols.\n\n"
                 "Respond with JSON (no markdown fencing):\n"
                 '[{"cell_id": "...", "caption": "..."}, ...]'
             )),
@@ -105,7 +106,8 @@ def _llm_curate(
                 f"Skip plots that are redundant (e.g., same scatter with minor variations). "
                 f"Prefer: (1) plots showing the key finding, (2) statistical test visualizations, "
                 f"(3) plots with different chart types (scatter vs histogram vs bar). "
-                f"For each selected plot, write a specific caption (1-2 sentences) with numbers.\n\n"
+                f"For each selected plot, write a specific caption (1-2 sentences) with numbers. "
+                f"Never use emojis or special unicode symbols.\n\n"
                 f"Respond with JSON (no markdown fencing):\n"
                 f'[{{"cell_id": "...", "caption": "..."}}]\n\n'
                 f"Select exactly {max_plots} plots. Use $...$ for math in captions."
@@ -185,7 +187,8 @@ def build_story_abstract(
             SystemMessage(content=(
                 f"Condense this executive summary into exactly {max_sentences} sentences "
                 f"for a paper abstract. Keep the most important quantitative findings. "
-                f"Use $...$ for math notation. Do not add information not in the original."
+                f"Use $...$ for math notation. Do not add information not in the original. "
+                f"Never use emojis or special unicode symbols."
             )),
             HumanMessage(content=executive_summary[:3000]),
         ])

@@ -362,7 +362,28 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
           <>
             <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
             <p className="text-sm font-body">Generating story report...</p>
-            <p className="text-xs text-outline">This may take a few moments</p>
+            <div className="flex flex-col gap-1.5 mt-3 text-xs text-on-surface-variant font-body">
+              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 1 ? "opacity-100" : "opacity-30"}`}>
+                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                <span>Building sections from knowledge graph</span>
+              </div>
+              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 3 ? "opacity-100" : "opacity-30"}`}>
+                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                <span>Curating plots and generating captions</span>
+              </div>
+              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 5 ? "opacity-100" : "opacity-30"}`}>
+                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                <span>Writing executive summary</span>
+              </div>
+              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 7 ? "opacity-100" : "opacity-30"}`}>
+                {retryCount >= 9 ? (
+                  <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                ) : (
+                  <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                )}
+                <span>Finalizing report</span>
+              </div>
+            </div>
           </>
         ) : (
           <>
