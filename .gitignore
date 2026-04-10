@@ -33,3 +33,4 @@ frontend/.next/
 output/
 *.log
 reference_repos/
+nginx/active.conf
