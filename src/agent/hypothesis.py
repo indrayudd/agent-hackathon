@@ -160,7 +160,7 @@ Rules:
 
         llm = get_chat_model()
         response = llm.invoke([
-            SystemMessage(content="You generate specific, testable data analysis hypotheses. Always respond with valid JSON."),
+            SystemMessage(content="You generate specific, testable data analysis hypotheses. Always respond with valid JSON. Never use emojis or special unicode symbols."),
             HumanMessage(content=prompt),
         ])
 
@@ -224,7 +224,9 @@ Time column: {time_col or 'none'}
 Respond with JSON (no markdown):
 {{"id": "user_h1", "title": "short title", "description": "what to test", "relevant_cols": ["col1"], "eda_rules": []}}
 
-If the question is NOT a hypothesis (just a chat question), respond with: {{"id": null}}"""),
+If the question is NOT a hypothesis (just a chat question), respond with: {{"id": null}}
+
+Never use emojis or special unicode symbols."""),
             HumanMessage(content=question),
         ])
 

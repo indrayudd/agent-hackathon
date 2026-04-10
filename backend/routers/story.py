@@ -1314,7 +1314,7 @@ async def regenerate_story(session_id: str):
         time_col = agent_state.get('time_col', 'N/A')
 
         resp = llm.invoke([
-            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points. Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters."),
+            SystemMessage(content="Write 2-3 paragraphs of flowing prose for an EDA report executive summary. Describe: what the data contains, key patterns, notable anomalies, investigated hypotheses and their conclusions, and recommended next steps. Be specific with numbers. Do NOT use bullet points. Format with markdown. For math, use proper LaTeX delimiters: $x$ for inline (e.g., $r = 0.95$, $p < 0.05$). Never write raw LaTeX without $ delimiters. Never use emojis or special unicode symbols."),
             HumanMessage(content=f"Dataset: {dataset_name}\n{dataset_info}\nColumns: {cols}\nTime column: {time_col}\n\nKnowledge graph:\n{kg_context[:2000]}\n\nTop conclusions:\n{conclusions_text}\n\nAll findings:\n{findings_text[:3000]}"),
         ])
         narrative = resp.content.strip()

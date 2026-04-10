@@ -248,6 +248,7 @@ Rules:
 - Include matplotlib plots where relevant (always plt.show())
 - Print findings clearly with numbers
 - Include statistical tests where appropriate (scipy.stats)
+- Never use emojis or special unicode symbols
 
 Respond with JSON (no markdown fencing):
 {{"code": "python code for ONE cell", "reasoning": "why this step", "done": false}}
@@ -411,6 +412,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             " Format with markdown. For math notation, always use proper LaTeX delimiters:"
             " $x$ for inline math (e.g., $r = 0.95$, $p < 0.05$, $\\Delta$, $\\chi^2$)."
             " Never write raw LaTeX without $ delimiters."
+            " Never use emojis or special unicode symbols."
         )
 
         # Build multimodal content: text + up to 2 plots (detail=low for speed)
