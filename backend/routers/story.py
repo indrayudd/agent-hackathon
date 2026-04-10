@@ -890,7 +890,8 @@ def _export_story_pdf(story: dict) -> bytes:
     import subprocess
     import tempfile
 
-    TECTONIC = "/tmp/tectonic"
+    import shutil as _shutil_find
+    TECTONIC = _shutil_find.which("tectonic") or "/tmp/tectonic"
     IEEE_CLS = pathlib.Path(__file__).resolve().parents[2] / "ieee_template"
 
     temp_dir = tempfile.mkdtemp(prefix="eda_pdf_")
