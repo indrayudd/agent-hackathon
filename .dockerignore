@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+sessions/
+traces/
+frontend/node_modules
+frontend/.next
+docs/
+*.md
+!requirements.txt
+!EDA_RULES.txt
