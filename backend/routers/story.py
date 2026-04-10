@@ -1013,6 +1013,18 @@ def _tex_esc(text: str) -> str:
     # Strip markdown bold/italic
     text = text.replace("**", "").replace("*", "")
 
+    # Fix stray LaTeX commands outside $ delimiters (common LLM error)
+    # e.g., \text{foo} → foo, \bar{x} → x, \geq → >=, \times → x
+    import re as _re
+    def _fix_stray_latex(t: str) -> str:
+        t = _re.sub(r'\\text\{([^}]*)\}', r'\1', t)
+        t = _re.sub(r'\\bar\{([^}]*)\}', r'\1', t)
+        t = _re.sub(r'\\hat\{([^}]*)\}', r'\1', t)
+        t = t.replace('\\geq', '>=').replace('\\leq', '<=')
+        t = t.replace('\\times', 'x').replace('\\approx', '~')
+        t = t.replace('\\rho', 'rho').replace('\\chi', 'chi')
+        return t
+
     # Split on $...$ math blocks, escape only the non-math parts
     parts = re.split(r'(\$[^$]+\$)', text)
     result = []
@@ -1021,9 +1033,9 @@ def _tex_esc(text: str) -> str:
             # Math block — pass through unchanged
             result.append(part)
         else:
-            result.append(_tex_esc_raw(part))
+            # Fix stray LaTeX in non-math text, then escape
+            result.append(_tex_esc_raw(_fix_stray_latex(part)))
     return "".join(result)
-    return text
 
 
 def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:

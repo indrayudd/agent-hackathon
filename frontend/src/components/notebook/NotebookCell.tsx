@@ -9,6 +9,8 @@ import CellOutput from "./CellOutput";
 import ThinkingBlock from "./ThinkingBlock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 interface Props {
   cell: Cell;
@@ -147,7 +149,7 @@ function NotebookCellInner({ cell, isActive, onFocus, onRun }: Props) {
                 onDoubleClick={() => setEditingMarkdown(true)}
               >
                 {cell.source ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
                     {cell.source.replace(/\\n/g, "\n")}
                   </ReactMarkdown>
                 ) : (
