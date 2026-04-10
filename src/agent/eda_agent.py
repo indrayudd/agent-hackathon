@@ -758,6 +758,8 @@ def run_agent(
                     sub_findings=data.get("sub_findings", []),
                     relevant_cols=data.get("relevant_cols", []),
                     images=images,
+                    cell_sources=data.get("cell_sources", {}),
+                    cell_outputs=data.get("cell_outputs", {}),
                 )
                 results.append(result)
                 results_by_hyp[hyp.id] = result
@@ -879,6 +881,11 @@ def run_agent(
                 node = kg.nodes.get(nid)
                 if node:
                     node.metadata["plot_images"] = all_images
+
+            node = kg.nodes.get(nid)
+            if node:
+                node.metadata["cell_sources"] = getattr(result, 'cell_sources', {})
+                node.metadata["cell_outputs"] = getattr(result, 'cell_outputs', {})
 
         _progress("Cross-referencing findings...")
 

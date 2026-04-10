@@ -67,6 +67,8 @@ def subagent_process_worker(
         # temp file instead of the Queue pipe to avoid macOS pipe buffer deadlock.
         result_dict = result.to_dict()
         result_dict["relevant_cols"] = result.relevant_cols
+        result_dict["cell_sources"] = result.cell_sources
+        result_dict["cell_outputs"] = result.cell_outputs
 
         if result.images:
             import json as _json, tempfile, os
