@@ -4,8 +4,12 @@ WORKDIR /app
 
 # System deps for numpy, scipy, matplotlib
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gfortran libopenblas-dev \
+    build-essential gfortran libopenblas-dev curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Tectonic for PDF export (single binary LaTeX compiler)
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | sh \
+    && mv tectonic /usr/local/bin/
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -14,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ backend/
 COPY src/ src/
 COPY datasets/ datasets/
+COPY ieee_template/ ieee_template/
 COPY EDA_RULES.txt ./
 
 # Create sessions dir
