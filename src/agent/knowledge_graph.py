@@ -455,14 +455,27 @@ class KnowledgeGraph:
             if children_text:
                 content += "\n\nSupporting evidence:\n" + "\n".join(children_text)
 
+            # Build plot metadata for story builder curation
+            plot_metadata = []
+            cell_sources = inv.metadata.get("cell_sources", {})
+            cell_outputs = inv.metadata.get("cell_outputs", {})
+            all_plot_ids = list(set(inv.plot_cell_ids + child_plots))
+            for pcid in all_plot_ids:
+                plot_metadata.append({
+                    "cell_id": pcid,
+                    "cell_source": cell_sources.get(pcid, ""),
+                    "cell_output": cell_outputs.get(pcid, ""),
+                })
+
             sections.append({
                 "phase": inv.phase,
                 "title": inv.phase.replace("Investigation: ", ""),
                 "content": content,
                 "cell_ids": list(set(inv.cell_ids + child_cells)),
-                "plot_cell_ids": list(set(inv.plot_cell_ids + child_plots)),
+                "plot_cell_ids": all_plot_ids,
                 "confidence": inv.confidence,
                 "type": "investigation",
+                "plot_metadata": plot_metadata,
             })
 
         return sections

@@ -22,6 +22,8 @@ class InvestigationResult:
     sub_findings: list[dict] = field(default_factory=list)
     images: dict[str, list[str]] = field(default_factory=dict)  # cell_id -> [base64 png]
     relevant_cols: list[str] = field(default_factory=list)
+    cell_sources: dict[str, str] = field(default_factory=dict)  # cell_id -> source code
+    cell_outputs: dict[str, str] = field(default_factory=dict)  # cell_id -> stdout text
 
     def to_dict(self) -> dict:
         return {
@@ -32,6 +34,8 @@ class InvestigationResult:
             "plot_cell_ids": self.plot_cell_ids,
             "confidence": self.confidence,
             "sub_findings": self.sub_findings,
+            "cell_sources": self.cell_sources,
+            "cell_outputs": self.cell_outputs,
         }
 
 
@@ -142,6 +146,7 @@ def run_subagent(
         overwrite: bool = False,
     ) -> tuple[str, list[dict], str | None]:
         """Write a cell, execute it, stream events, return (cell_id, outputs, error)."""
+        original_code = code  # capture before preamble injection
         # Prepend safe imports only to the FIRST code cell (not every cell)
         if cell_type == "code" and not overwrite and not _first_cell_executed[0]:
             code = (
@@ -196,6 +201,7 @@ def run_subagent(
                     result.images.setdefault(cell_id, []).append(img)
 
         result.cell_ids.append(cell_id)
+        result.cell_sources[cell_id] = original_code
         time.sleep(0.05)
         return cell_id, outputs, error
 
@@ -294,6 +300,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             if not error:
                 output_text = _extract_text(outputs)
                 all_outputs.append(output_text)
+                result.cell_outputs[cell_id] = output_text
 
                 # Build multimodal feedback — include plot image if one was generated
                 feedback_text = f"Cell {step+1} output:\n{output_text[:1000]}"
@@ -330,6 +337,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                     if not fix_error:
                         output_text = _extract_text(fix_outputs)
                         all_outputs.append(output_text)
+                        result.cell_outputs[cell_id] = output_text
                         conversation.append(step_response)
                         conversation.append(HumanMessage(content=f"Cell {step+1} output (after auto-fix):\n{output_text[:1000]}\n\nWhat next? (step {step+2}/{max_cells})"))
                         continue
@@ -359,6 +367,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
                     if not fix_error:
                         output_text = _extract_text(fix_outputs)
                         all_outputs.append(output_text)
+                        result.cell_outputs[cell_id] = output_text
                         conversation.append(step_response)
                         conversation.append(HumanMessage(content=f"Cell {step+1} output (after fix):\n{output_text[:1000]}\n\nWhat next? (step {step+2}/{max_cells})"))
                 except Exception as fix_exc:

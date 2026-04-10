@@ -431,6 +431,21 @@ def _augment_story_plot_metadata(session_id: str, story: dict) -> dict:
                             )
                         )
 
+        # Filter to curated selection if available
+        selected_plots_list = section.get("selected_plots")
+        if selected_plots_list and plot_metadata:
+            selected_ids = {s["cell_id"] for s in selected_plots_list}
+            caption_map = section.get("plot_captions", {})
+            filtered = []
+            for p in plot_metadata:
+                src_id = p.get("source_cell_id", "")
+                if src_id in selected_ids:
+                    if src_id in caption_map:
+                        p["caption"] = caption_map[src_id]
+                        p["title"] = caption_map[src_id]
+                    filtered.append(p)
+            plot_metadata = filtered if filtered else plot_metadata[:3]
+
         if plot_metadata:
             section["plots"] = plot_metadata
 
@@ -1026,6 +1041,12 @@ def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:
         sec_title = section.get("title", f"Section {i+1}")
         content = section.get("content", "")
 
+        # Clean markdown artifacts from content
+        content = re.sub(r'^#{1,4}\s+.*$', '', content, flags=re.MULTILINE)  # Strip markdown headers
+        content = content.replace("- Key finding:", "-")  # Remove verbose prefix
+        content = content.replace("- - Key finding:", "-")
+        content = content.strip()
+
         # Convert content lines
         body_lines = []
         for line in content.split("\n"):
@@ -1053,18 +1074,35 @@ def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:
         if in_itemize:
             body_tex += "\\end{itemize}\n"
 
-        # Figures
+        # Figures — capped at 3 per section, use curated captions
         figs_tex = ""
+        section_fig_count = 0
+        caption_map = section.get("plot_captions", {})
         for plot in section.get("plots", []):
+            if section_fig_count >= 3:
+                break
             fig_counter += 1
-            caption = plot.get("caption", plot.get("title", f"Figure {fig_counter}"))
+            section_fig_count += 1
+
+            # Use curated caption if available, else fallback
+            src_cell = plot.get("source_cell_id", "")
+            caption = caption_map.get(src_cell, plot.get("caption", plot.get("title", f"Figure {fig_counter}")))
+
             if fig_counter in fig_paths:
+                # Wide figures for heatmaps, correlation matrices, multi-panel plots
+                caption_lower = caption.lower()
+                is_wide = any(kw in caption_lower for kw in [
+                    "matrix", "heatmap", "correlation", "pairwise", "grid", "panel",
+                ])
+                fig_env = "figure*" if is_wide else "figure"
+                width = "0.85\\textwidth" if is_wide else "0.95\\columnwidth"
+
                 figs_tex += f"""
-\\begin{{figure}}[htbp]
-\\centerline{{\\includegraphics[width=0.95\\columnwidth]{{{fig_paths[fig_counter]}}}}}
+\\begin{{{fig_env}}}[htbp]
+\\centerline{{\\includegraphics[width={width}]{{{fig_paths[fig_counter]}}}}}
 \\caption{{{_tex_esc(str(caption))}}}
 \\label{{fig{fig_counter}}}
-\\end{{figure}}
+\\end{{{fig_env}}}
 """
 
         sec_tex += f"\\section{{{_tex_esc(sec_title)}}}\n{body_tex}\n{figs_tex}\n"
@@ -1087,7 +1125,7 @@ Generated: {_tex_esc(date_str)}}}}}
 \\maketitle
 
 \\begin{{abstract}}
-{_tex_esc(summary[:3000])}
+{_tex_esc(story.get("abstract", summary[:500]))}
 \\end{{abstract}}
 
 \\begin{{IEEEkeywords}}
@@ -1286,13 +1324,14 @@ async def regenerate_story(session_id: str):
         if not narrative:
             narrative = "Key findings: " + "; ".join(s.get("title", "") for s in sections[:10])
 
-    story_data = {
-        "title": f"EDA Report: {dataset_name}",
-        "executive_summary": narrative,
-        "sections": sections,
-        "generated_at": datetime.datetime.now().isoformat(),
-    }
+    from src.reporting.story_builder import build_curated_story
 
+    story_data = build_curated_story(
+        sections=sections,
+        executive_summary=narrative,
+        dataset_name=dataset_name,
+        max_plots_per_section=3,
+    )
     if kg is not None:
         story_data["knowledge_graph"] = kg.to_dict()
 
