@@ -1083,7 +1083,10 @@ async def get_story(session_id: str, format: str = Query("json")):
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{_story_pdf_filename(story)}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{_story_pdf_filename(story)}"',
+                "Content-Length": str(len(pdf_bytes)),
+            },
         )
 
     # Default: return JSON — sanitize NaN/Inf that can't be serialized
