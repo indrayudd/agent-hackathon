@@ -48,3 +48,70 @@ def test_get_story_sections_includes_plot_metadata():
     assert "cell_id" in meta0
     assert "cell_source" in meta0
     assert "cell_output" in meta0
+
+
+from src.reporting.story_builder import curate_section_plots, build_curated_story, build_story_abstract, _fallback_captions
+
+
+def test_curate_section_plots_within_limit():
+    """If plots <= max, generate captions for all."""
+    section = {
+        "title": "Test",
+        "content": "Finding text.",
+        "plot_metadata": [
+            {"cell_id": "c1", "cell_source": "plt.scatter(x, y)\nplt.show()", "cell_output": "[plot]"},
+            {"cell_id": "c2", "cell_source": "plt.hist(data)\nplt.show()", "cell_output": "[plot]"},
+        ],
+    }
+    result = curate_section_plots(section, max_plots=3)
+    assert len(result) <= 3
+    assert len(result) >= 1  # at least fallback
+    for item in result:
+        assert "cell_id" in item
+        assert "caption" in item
+
+
+def test_curate_section_plots_empty_metadata():
+    """If no plot metadata, return empty list."""
+    section = {"title": "Data Loading", "content": "Loaded 9357 rows.", "plot_metadata": []}
+    result = curate_section_plots(section, max_plots=3)
+    assert result == []
+
+
+def test_fallback_captions_extracts_title():
+    """Fallback should extract plt.title from source code."""
+    section = {"title": "Hypothesis A"}
+    plots = [
+        {"cell_id": "c1", "cell_source": "plt.scatter(x, y)\nplt.title('CO vs Sensor Response')\nplt.show()", "cell_output": ""},
+    ]
+    result = _fallback_captions(section, plots)
+    assert len(result) == 1
+    assert result[0]["caption"] == "CO vs Sensor Response"
+
+
+def test_fallback_captions_chart_type():
+    """Fallback should detect chart type from source."""
+    section = {"title": "My Analysis"}
+    plots = [
+        {"cell_id": "c1", "cell_source": "plt.hist(data, bins=30)\nplt.show()", "cell_output": ""},
+    ]
+    result = _fallback_captions(section, plots)
+    assert "Distribution" in result[0]["caption"]
+
+
+def test_build_curated_story_structure():
+    """Curated story should have abstract and curated sections."""
+    sections = [{
+        "title": "Test",
+        "content": "Finding.",
+        "plot_cell_ids": ["c1"],
+        "type": "investigation",
+        "plot_metadata": [
+            {"cell_id": "c1", "cell_source": "plt.plot(x)\nplt.show()", "cell_output": "[plot]"},
+        ],
+    }]
+    story = build_curated_story(sections, "This is the summary. It has findings.", max_plots_per_section=2)
+    assert "abstract" in story
+    assert "sections" in story
+    assert "executive_summary" in story
+    assert "generated_at" in story
