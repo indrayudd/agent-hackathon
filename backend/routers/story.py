@@ -972,13 +972,8 @@ def _export_story_pdf(story: dict) -> bytes:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def _tex_esc(text: str) -> str:
-    """Escape special LaTeX characters."""
-    if not text:
-        return ""
-    # Strip markdown formatting first
-    text = text.replace("**", "").replace("*", "")
-    # Escape LaTeX specials
+def _tex_esc_raw(text: str) -> str:
+    """Escape special LaTeX characters in a plain text fragment (no math)."""
     replacements = [
         ("\\", "\\textbackslash{}"),
         ("&", "\\&"),
@@ -993,6 +988,26 @@ def _tex_esc(text: str) -> str:
     ]
     for old, new in replacements:
         text = text.replace(old, new)
+    return text
+
+
+def _tex_esc(text: str) -> str:
+    """Escape special LaTeX characters, preserving $...$ math blocks."""
+    if not text:
+        return ""
+    # Strip markdown bold/italic
+    text = text.replace("**", "").replace("*", "")
+
+    # Split on $...$ math blocks, escape only the non-math parts
+    parts = re.split(r'(\$[^$]+\$)', text)
+    result = []
+    for part in parts:
+        if part.startswith('$') and part.endswith('$') and len(part) > 1:
+            # Math block — pass through unchanged
+            result.append(part)
+        else:
+            result.append(_tex_esc_raw(part))
+    return "".join(result)
     return text
 
 
@@ -1056,6 +1071,7 @@ def _build_ieee_latex(story: dict, fig_paths: dict[int, str]) -> str:
 
     return f"""\\documentclass[conference]{{IEEEtran}}
 \\usepackage{{graphicx}}
+\\usepackage{{amsmath,amssymb}}
 \\usepackage{{textcomp}}
 \\usepackage{{xcolor}}
 \\usepackage[utf8]{{inputenc}}
