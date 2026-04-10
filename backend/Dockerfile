@@ -5,7 +5,7 @@ WORKDIR /app
 # System deps for numpy, scipy, matplotlib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gfortran libopenblas-dev curl \
-    libgraphite2-3 libharfbuzz0b libicu72 libfontconfig1 libfreetype6 \
+    libgraphite2-3 libharfbuzz0b libicu-dev libfontconfig1 libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Tectonic for PDF export (single binary LaTeX compiler)
