@@ -534,7 +534,8 @@ def _finalize_chat_investigation(session_id: str, hyp, chat_notebook_id: str, re
             # Persist KG too
             if kg is not None:
                 story["knowledge_graph"] = kg.to_dict()
-            story_path.write_text(json.dumps(story, default=str, indent=2))
+            from backend.routers.story import atomic_write_json
+            atomic_write_json(story_path, story)
 
         from src.reporting.versioning import create_snapshot
         create_snapshot(session_id, f"Investigation: {hyp.title[:40]}")
