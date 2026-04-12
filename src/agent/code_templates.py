@@ -63,9 +63,9 @@ df.head()'''
 
 
 def inspect_dtypes_code() -> str:
-    return '''print("Column types:")
-print(df.dtypes)
-print(f"\\nShape: {df.shape}")'''
+    return '''import json as _json
+print("AGENTICEDA_DTYPES:" + _json.dumps(df.dtypes.astype(str).to_dict()))
+print(f"Shape: {df.shape}")'''
 
 
 def inspect_describe_code() -> str:

@@ -326,42 +326,36 @@ def run_agent(
                 _think("Checking column types to identify datetime, numeric, and categorical columns...")
                 _, outputs, error = _write_and_run(ct.inspect_dtypes_code())
                 if not error:
-                    # Parse dtypes from output
+                    # Parse dtypes from the machine-readable JSON emitted by inspect_dtypes_code().
+                    # Format: AGENTICEDA_DTYPES:{...json dict of col -> dtype string...}
                     datetime_cols: list[str] = []
+                    dtypes_raw: dict[str, str] = {}
                     for o in outputs:
                         text = o.get("text", "")
                         for line in text.split("\n"):
-                            parts = line.strip().split()
-                            if len(parts) >= 2:
-                                # pandas may print dtype tokens containing spaces (e.g. "datetime64[ns, UTC]")
-                                # Column names with spaces are rare; treat first token as column, rest as dtype.
-                                col_name = parts[0].strip()
-                                dtype = " ".join(parts[1:]).strip()
-                                # Skip pandas metadata lines like "dtype: object"
-                                if col_name.lower().rstrip(":") in ("dtype", "length", "name"):
-                                    continue
-                                if not col_name or not dtype:
-                                    continue
+                            if line.startswith("AGENTICEDA_DTYPES:"):
+                                try:
+                                    dtypes_raw = json.loads(line[len("AGENTICEDA_DTYPES:"):])
+                                except json.JSONDecodeError:
+                                    pass
+                                break
+                        if dtypes_raw:
+                            break
 
-                                dtype_l = dtype.lower()
-                                is_known_dtype = (
-                                    dtype_l.startswith("datetime")
-                                    or dtype_l.startswith("float")
-                                    or dtype_l.startswith("int")
-                                    or dtype_l in ("object", "str", "string", "bool", "boolean", "category")
-                                )
-                                if not is_known_dtype:
-                                    continue
+                    for col_name, dtype in dtypes_raw.items():
+                        if not col_name or not dtype:
+                            continue
+                        dtype_l = dtype.lower()
+                        state.dtypes[col_name] = dtype
+                        if dtype_l.startswith("datetime"):
+                            datetime_cols.append(col_name)
+                        elif dtype_l.startswith("float") or dtype_l.startswith("int"):
+                            if col_name not in state.numeric_cols:
+                                state.numeric_cols.append(col_name)
+                        elif dtype_l in ("object", "str", "string", "bool", "boolean", "category"):
+                            if col_name not in state.categorical_cols:
+                                state.categorical_cols.append(col_name)
 
-                                state.dtypes[col_name] = dtype
-                                if dtype_l.startswith("datetime"):
-                                    datetime_cols.append(col_name)
-                                elif dtype_l.startswith("float") or dtype_l.startswith("int"):
-                                    if col_name not in state.numeric_cols:
-                                        state.numeric_cols.append(col_name)
-                                elif dtype_l in ("object", "str", "string", "bool", "boolean"):
-                                    if col_name not in state.categorical_cols:
-                                        state.categorical_cols.append(col_name)
                     if state.dtypes:
                         state.columns = list(state.dtypes.keys())
 
