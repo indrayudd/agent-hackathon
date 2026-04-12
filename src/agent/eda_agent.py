@@ -845,22 +845,40 @@ def run_agent(
                     cell_ids=data.get("cell_ids", []),
                     plot_cell_ids=data.get("plot_cell_ids", []),
                     confidence=data.get("confidence", 0.5),
+                    status=data.get("status", "complete"),
                     sub_findings=data.get("sub_findings", []),
                     relevant_cols=data.get("relevant_cols", []),
                     images=images,
                     cell_sources=data.get("cell_sources", {}),
                     cell_outputs=data.get("cell_outputs", {}),
                 )
-                results.append(result)
-                results_by_hyp[hyp.id] = result
-                state.subagent_run_count += 1
-                push_event(session_id, {
-                    "type": "subagent_complete",
-                    "hypothesis_id": hyp.id,
-                    "notebook_id": notebook_id,
-                    "finding": result.finding,
-                    "confidence": result.confidence,
-                })
+                if getattr(result, "status", "complete") == "complete":
+                    results.append(result)
+                    results_by_hyp[hyp.id] = result
+                    state.subagent_run_count += 1
+                    push_event(session_id, {
+                        "type": "subagent_complete",
+                        "hypothesis_id": hyp.id,
+                        "notebook_id": notebook_id,
+                        "finding": result.finding,
+                        "confidence": result.confidence,
+                        "status": "complete",
+                    })
+                elif getattr(result, "status", "complete") == "timeout":
+                    _LOG.warning("Subagent for %s hit internal deadline (timeout)", hyp.id)
+                    push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
+                    _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+                else:
+                    _LOG.warning("Subagent for %s returned failed result", hyp.id)
+                    push_event(session_id, {
+                        "type": "subagent_complete",
+                        "hypothesis_id": hyp.id,
+                        "notebook_id": notebook_id,
+                        "finding": result.finding,
+                        "confidence": result.confidence,
+                        "status": "failed",
+                    })
+                    _think(f"Investigation of '{hyp.title}' failed. Moving on.")
             elif status == "error":
                 _LOG.warning("Subagent for %s returned error: %s", hyp.id, data)
                 push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
