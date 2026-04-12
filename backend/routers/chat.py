@@ -388,10 +388,6 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
     # Background thread to drain events and collect result
     def _background_finish():
         drain_deadline = time.time() + 300  # 5 min hard cap
-        last_event_at = time.time()
-        # If the child produces no events for too long, treat it as hung.
-        # This avoids the UI appearing frozen while we wait for the hard cap.
-        no_event_watchdog_s = 30
         # Drain events from child process → push_event
         while time.time() < drain_deadline:
             try:
@@ -399,19 +395,8 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
                 if evt is None:
                     break
                 push_event(session_id, evt)
-                last_event_at = time.time()
             except Exception:
                 if not p.is_alive():
-                    break
-                if (time.time() - last_event_at) > no_event_watchdog_s:
-                    _LOG.warning(
-                        "Chat investigation appears hung (no events for %ss); terminating",
-                        no_event_watchdog_s,
-                    )
-                    try:
-                        p.terminate()
-                    except Exception:
-                        pass
                     break
 
         # Ensure process is finished; terminate if hung
@@ -471,10 +456,6 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
         "role": "agent",
         "type": "text",
         "content": f"**Investigating: {hyp.title}**\n\nI've started a background investigation. Watch the **{chat_notebook_id}** tab in the notebook for live progress. Results will appear when complete.",
-        "notebook_id": chat_notebook_id,
-        "hypothesis_id": hyp.id,
-        "title": hyp.title,
-        "status": "started",
         "action_code": None,
     }
 

@@ -571,19 +571,7 @@ def execute_code_on_connection(
     client.load_connection_file(connection_file)
     client.start_channels()
     try:
-        # `wait_for_ready` can time out even when the kernel is alive but busy.
-        # Treat readiness timeouts as non-fatal; the subsequent execute call may still succeed.
-        ready_timeout = max(10, min(30, int(timeout)))
-        try:
-            client.wait_for_ready(timeout=ready_timeout)
-        except Exception as exc:
-            _LOG.warning(
-                "Kernel wait_for_ready failed (timeout=%ss) for %s: %s",
-                ready_timeout,
-                connection_file,
-                exc,
-            )
-
+        client.wait_for_ready(timeout=10)
         if cell_id:
             code = (
                 f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
@@ -592,12 +580,7 @@ def execute_code_on_connection(
                 f"{code}\n"
                 "_agenticeda_emit_fallback_plot_specs()\n"
             )
-
-        try:
-            msg_id = client.execute(code)
-        except Exception as exc:
-            return [], f"Kernel execute failed: {exc}"
-
+        msg_id = client.execute(code)
         outputs: list[dict[str, Any]] = []
         error: str | None = None
         while True:
@@ -606,10 +589,6 @@ def execute_code_on_connection(
             except queue.Empty:
                 error = f"Execution timed out after {timeout}s"
                 break
-            except Exception as exc:
-                error = f"Kernel IOPub read failed: {exc}"
-                break
-
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
             msg_type = msg["msg_type"]
