@@ -223,7 +223,7 @@ if date_col:
 
     composed = (date_str.fillna("") + " " + time_str.fillna("")).str.strip()
     parsed, strategy, valid_ratio = _agenticeda_best_parse(composed)
-    source_desc = f"{{date_col}}+{time_col}"
+    source_desc = str(date_col) + "+" + {json.dumps(time_col)}
 else:
     parsed, strategy, valid_ratio = _agenticeda_best_parse(df[{json.dumps(time_col)}])
     source_desc = {json.dumps(time_col)}

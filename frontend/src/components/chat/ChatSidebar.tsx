@@ -24,7 +24,7 @@ export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSide
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+  }, [messages.length, isTyping]);
 
   const handleViewCell = useCallback((cellId: string) => {
     const el = document.getElementById(`cell-${cellId}`);
