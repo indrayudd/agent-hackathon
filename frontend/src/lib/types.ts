@@ -131,6 +131,14 @@ export interface ChatMessage {
   content: string;
   type: "text" | "cell_ref" | "action";
   cell_id?: string;
+  meta?: {
+    kind?: "investigation" | "action" | "info";
+    notebook_id?: string;
+    hypothesis_id?: string;
+    title?: string;
+    status?: "started" | "running" | "complete" | "failed" | "timeout";
+    confidence?: number;
+  };
   timestamp: string;
 }
 

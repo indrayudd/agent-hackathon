@@ -251,6 +251,28 @@ export function useAgentStream(sessionId: string) {
               store.setNotebookStatus(data.notebook_id, "running");
               store.addHypothesisGroup(data.notebook_id, data.title);
             }
+            if (data.notebook_id && String(data.notebook_id).startsWith("chat_")) {
+              const alreadyAnnounced = chat.messages?.some(
+                (m) =>
+                  m.meta?.kind === "investigation" &&
+                  m.meta?.notebook_id === data.notebook_id &&
+                  m.meta?.status === "started",
+              );
+              if (!alreadyAnnounced) {
+                chat.addAgentMessage(
+                  "Investigation started. Streaming progress to the new notebook tab.",
+                  "action",
+                  undefined,
+                  {
+                    kind: "investigation",
+                    notebook_id: data.notebook_id,
+                    hypothesis_id: data.hypothesis_id,
+                    title: data.title,
+                    status: "started",
+                  },
+                );
+              }
+            }
             store.setAgentActivity("thinking", `Starting: ${data.title || ""}`, {
               hypothesisId: data.hypothesis_id,
               notebookId: data.notebook_id || "main",
@@ -266,6 +288,20 @@ export function useAgentStream(sessionId: string) {
               store.setPipelineRunning(false);
               store.setCurrentPhase("");
               store.setLatestThinking("");
+              const status =
+                typeof data.confidence === "number" && data.confidence <= 0 ? "failed" : "complete";
+              chat.addAgentMessage(
+                (data.finding || "").trim() ? (data.finding as string) : "Investigation complete.",
+                "text",
+                undefined,
+                {
+                  kind: "investigation",
+                  notebook_id: data.notebook_id,
+                  hypothesis_id: data.hypothesis_id,
+                  status,
+                  confidence: data.confidence,
+                },
+              );
             }
             store.setAgentActivity("complete", `Done: ${(data.finding || "").slice(0, 80)}`, {
               hypothesisId: data.hypothesis_id,
@@ -276,6 +312,19 @@ export function useAgentStream(sessionId: string) {
           case "subagent_timeout":
             if ((data as any).notebook_id) {
               store.setNotebookStatus((data as any).notebook_id, "timeout");
+            }
+            if ((data as any).notebook_id && String((data as any).notebook_id).startsWith("chat_")) {
+              chat.addAgentMessage(
+                "Investigation timed out before producing a result.",
+                "text",
+                undefined,
+                {
+                  kind: "investigation",
+                  notebook_id: (data as any).notebook_id,
+                  hypothesis_id: data.hypothesis_id,
+                  status: "timeout",
+                },
+              );
             }
             store.setAgentActivity("fixing", "Investigation timed out", {
               hypothesisId: data.hypothesis_id,

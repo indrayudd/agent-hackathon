@@ -15,8 +15,11 @@ interface ChatSidebarProps {
 
 export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSidebarProps) {
   const messages = useChatStore((s) => s.messages);
+  const isTyping = useChatStore((s) => s.isTyping);
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
   const { sendMessage } = useChat(sessionId);
+  const setActiveNotebook = useNotebookStore((s) => s.setActiveNotebook);
+  const setActiveTab = useNotebookStore((s) => s.setActiveTab);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,6 +34,11 @@ export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSide
       setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 2000);
     }
   }, []);
+
+  const handleOpenNotebook = useCallback((notebookId: string) => {
+    setActiveNotebook(notebookId);
+    setActiveTab("notebook");
+  }, [setActiveNotebook, setActiveTab]);
 
   return (
     <div className={`bg-surface-container-low border-l border-outline-variant/20 flex flex-col shrink-0 h-full transition-[width] duration-200 overflow-hidden ${collapsed ? "w-0 border-l-0" : "w-80"}`}>
@@ -82,8 +90,22 @@ export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSide
           </div>
         )}
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} onViewCell={handleViewCell} />
+          <ChatMessage key={msg.id} message={msg} onViewCell={handleViewCell} onOpenNotebook={handleOpenNotebook} />
         ))}
+        {isTyping && (
+          <div className="flex items-start gap-3">
+            <div className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center shrink-0">
+              <span className="material-symbols-outlined text-primary text-sm">smart_toy</span>
+            </div>
+            <div className="bg-surface-container-lowest rounded-2xl rounded-tl-none chat-shadow border border-outline-variant/5 px-3 py-2">
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/60 animate-pulse" />
+                <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/60 animate-pulse [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/60 animate-pulse [animation-delay:300ms]" />
+              </div>
+            </div>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 

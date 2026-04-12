@@ -150,28 +150,37 @@ def _load_excel(
 
     engine = "openpyxl" if path.suffix.lower() == ".xlsx" else None
 
-    # Discover sheet names
+    target_sheet = sheet_name if sheet_name is not None else 0
+
+    # Important: keep the ExcelFile open only inside a context manager.
+    # On Windows, leaving an ExcelFile handle unclosed prevents deleting the underlying file.
     try:
-        xls = pd.ExcelFile(path, engine=engine)
-        all_sheets = xls.sheet_names
+        with pd.ExcelFile(path, engine=engine) as xls:
+            all_sheets = xls.sheet_names
+
+            if len(all_sheets) > 1 and sheet_name is None:
+                warnings.append(
+                    f"Workbook contains {len(all_sheets)} sheets {all_sheets}; loading the first sheet ('{all_sheets[0]}')."
+                )
+
+            try:
+                df = xls.parse(sheet_name=target_sheet)
+            except Exception as exc:
+                warnings.append(f"Excel parse error: {exc}")
+                raise ValueError(f"Unable to parse Excel file '{path.name}': {exc}") from exc
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError(f"Unable to open Excel file '{path.name}': {exc}") from exc
 
-    if len(all_sheets) > 1 and sheet_name is None:
-        warnings.append(
-            f"Workbook contains {len(all_sheets)} sheets {all_sheets}; loading the first sheet ('{all_sheets[0]}')."
+    resolved_sheet = (
+        target_sheet
+        if isinstance(target_sheet, str)
+        else (
+            all_sheets[target_sheet]
+            if isinstance(target_sheet, int) and 0 <= target_sheet < len(all_sheets)
+            else str(target_sheet)
         )
-
-    target_sheet = sheet_name if sheet_name is not None else 0
-
-    try:
-        df = pd.read_excel(path, sheet_name=target_sheet, engine=engine)
-    except Exception as exc:
-        warnings.append(f"Excel parse error: {exc}")
-        raise ValueError(f"Unable to parse Excel file '{path.name}': {exc}") from exc
-
-    resolved_sheet = target_sheet if isinstance(target_sheet, str) else (
-        all_sheets[target_sheet] if isinstance(target_sheet, int) and target_sheet < len(all_sheets) else str(target_sheet)
     )
 
     meta = _make_metadata("excel", path.name, df, sheet_name=resolved_sheet, warnings=warnings)

@@ -30,7 +30,17 @@ export function useChat(sessionId: string) {
           useChatStore.getState().addAgentMessage(
             data.content,
             data.type || "text",
-            data.cell_id
+            data.cell_id,
+            (data.notebook_id || data.hypothesis_id)
+              ? {
+                  kind: data.notebook_id ? "investigation" : "info",
+                  notebook_id: data.notebook_id,
+                  hypothesis_id: data.hypothesis_id,
+                  title: data.title,
+                  status: data.status,
+                  confidence: data.confidence,
+                }
+              : undefined
           );
 
           // If chat executed code, the cell should already be in the stream
