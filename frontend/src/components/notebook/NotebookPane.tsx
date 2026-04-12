@@ -5,9 +5,12 @@ import { useNotebookStore } from "@/stores/notebookStore";
 import type { Cell } from "@/lib/types";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useKernel } from "@/hooks/useKernel";
+import { patchNotebook } from "@/lib/api";
 import NotebookCell from "./NotebookCell";
 import NotebookTabs from "./NotebookTabs";
 import ThinkingBlock from "./ThinkingBlock";
+
+type SaveStatus = "idle" | "saving" | "saved" | "failed";
 
 export default function NotebookPane() {
   const cells = useNotebookStore((s) => s.cells);
@@ -15,12 +18,14 @@ export default function NotebookPane() {
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
   const currentPhase = useNotebookStore((s) => s.currentPhase);
   const latestThinking = useNotebookStore((s) => s.latestThinking);
-  const activeNbId = useNotebookStore((s: any) => s.activeNotebookId) as string;
-  const investigationCells = useNotebookStore((s: any) => s.notebooks[s.activeNotebookId]?.cells || []) as Cell[];
+  const activeNbId = useNotebookStore((s) => s.activeNotebookId);
+  const investigationCells = useNotebookStore((s) => s.notebooks[s.activeNotebookId]?.cells || []) as Cell[];
   const displayCells = activeNbId === "main" ? cells : investigationCells;
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const { status, executeCell } = useKernel(activeSessionId ?? "");
   const [activeCellId, setActiveCellId] = useState<string | null>(null);
+  const [runAllRunning, setRunAllRunning] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -141,22 +146,77 @@ export default function NotebookPane() {
     return () => observer.disconnect();
   }, [scrollToBottom, pipelineRunning]);
 
+  const saveMainNotebook = useCallback(async () => {
+    if (!activeSessionId || activeNbId !== "main") return;
+    setSaveStatus("saving");
+    try {
+      await patchNotebook(activeSessionId, useNotebookStore.getState().cells);
+      useNotebookStore.getState().setDirty(false);
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("failed");
+    }
+  }, [activeNbId, activeSessionId]);
+
   const handleRunCell = useCallback(
     async (cellId: string, source: string) => {
-      const outputs = await executeCell(cellId, source);
-      useNotebookStore.getState().updateCellOutputs(cellId, outputs);
+      if (activeNbId !== "main" || !source.trim()) return;
+      const store = useNotebookStore.getState();
+      store.setCellExecuting(cellId, true);
+      store.setCellError(cellId, null);
+      try {
+        const result = await executeCell(cellId, source);
+        store.updateCellOutputs(cellId, result.outputs);
+        if (result.error) {
+          store.setCellError(cellId, result.error);
+        }
+        await saveMainNotebook();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Cell execution failed";
+        store.setCellError(cellId, message);
+      } finally {
+        useNotebookStore.getState().setCellExecuting(cellId, false);
+      }
     },
-    [executeCell]
+    [activeNbId, executeCell, saveMainNotebook]
   );
 
   const handleRunAll = useCallback(async () => {
-    for (const cell of cells) {
-      if (cell.cell_type === "code") {
-        const outputs = await executeCell(cell.id, cell.source);
-        useNotebookStore.getState().updateCellOutputs(cell.id, outputs);
+    if (runAllRunning || pipelineRunning || activeNbId !== "main") return;
+    setRunAllRunning(true);
+    let shouldSave = false;
+    try {
+      for (const cell of cells) {
+        if (cell.cell_type !== "code" || !cell.source.trim()) {
+          continue;
+        }
+
+        const store = useNotebookStore.getState();
+        store.setCellExecuting(cell.id, true);
+        store.setCellError(cell.id, null);
+        try {
+          const result = await executeCell(cell.id, cell.source);
+          store.updateCellOutputs(cell.id, result.outputs);
+          shouldSave = true;
+          if (result.error) {
+            store.setCellError(cell.id, result.error);
+            break;
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Run All failed";
+          store.setCellError(cell.id, message);
+          break;
+        } finally {
+          useNotebookStore.getState().setCellExecuting(cell.id, false);
+        }
       }
+    } finally {
+      if (shouldSave) {
+        await saveMainNotebook();
+      }
+      setRunAllRunning(false);
     }
-  }, [cells, executeCell]);
+  }, [activeNbId, cells, executeCell, pipelineRunning, runAllRunning, saveMainNotebook]);
 
   const statusColor =
     status === "connected"
@@ -164,6 +224,7 @@ export default function NotebookPane() {
       : status === "busy"
       ? "bg-yellow-400"
       : "bg-outline";
+  const canRunAll = Boolean(activeSessionId) && activeNbId === "main" && !pipelineRunning && !runAllRunning;
 
   return (
     <div className="flex flex-col h-full bg-gradient-to-b from-surface to-surface-container-lowest">
@@ -171,9 +232,11 @@ export default function NotebookPane() {
       <div className="flex items-center gap-2 px-4 py-2 border-b border-outline-variant/20 bg-surface/95 backdrop-blur-sm">
         <button
           onClick={handleRunAll}
-          className="px-3 py-1 text-xs font-body font-medium rounded-lg bg-primary text-on-primary hover:opacity-90 transition-all shadow-sm"
+          disabled={!canRunAll}
+          title={activeNbId !== "main" ? "Run All is available for the main notebook" : "Run all code cells"}
+          className="px-3 py-1 text-xs font-body font-medium rounded-lg bg-primary text-on-primary hover:opacity-90 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Run All
+          {runAllRunning ? "Running..." : "Run All"}
         </button>
         <button
           onClick={() => addCell(cells.length, "code")}
@@ -188,6 +251,15 @@ export default function NotebookPane() {
           + Markdown
         </button>
         <div className="ml-auto flex items-center gap-1.5">
+          {saveStatus !== "idle" && (
+            <span
+              className={`mr-2 text-[10px] font-body ${
+                saveStatus === "failed" ? "text-error" : "text-on-surface-variant"
+              }`}
+            >
+              {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save failed"}
+            </span>
+          )}
           <span className={`w-2 h-2 rounded-full ${statusColor}`} />
           <span className="text-[10px] text-on-surface-variant font-body capitalize">{status}</span>
         </div>

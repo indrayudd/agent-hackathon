@@ -1,4 +1,4 @@
-import type { Session, StorySection } from "./types";
+import type { Cell, Session, StorySection } from "./types";
 import { API_BASE } from "./backend";
 
 export interface UploadResponse {
@@ -52,6 +52,18 @@ export async function listSessions(): Promise<SessionListResponse> {
 export async function getNotebook(sessionId: string): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${API_BASE}/notebook/${sessionId}`);
   if (!res.ok) return null;
+  return res.json();
+}
+
+export async function patchNotebook(sessionId: string, cells: Cell[]): Promise<{ status: string; cell_count: number }> {
+  const res = await fetch(`${API_BASE}/notebook/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cells }),
+  });
+  if (!res.ok) {
+    throw new Error(`Notebook save failed: ${await readError(res)}`);
+  }
   return res.json();
 }
 

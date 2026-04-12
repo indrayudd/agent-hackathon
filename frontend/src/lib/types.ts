@@ -23,6 +23,7 @@ export interface Cell {
   source: string;
   outputs: CellOutput[];
   execution_count: number | null;
+  metadata?: Record<string, unknown>;
   baselineOutputs?: CellOutput[];
   executing?: boolean;
   error?: string | null;

@@ -83,7 +83,12 @@ export const useNotebookStore = create<NotebookState>((set) => ({
     // Deduplicate by ID, keeping last occurrence
     const seen = new Map<string, Cell>();
     for (const cell of cells) seen.set(cell.id, cell);
-    return set({ cells: Array.from(seen.values()), dirty: false });
+    const nextCells = Array.from(seen.values());
+    const executionCounter = nextCells.reduce(
+      (max, cell) => Math.max(max, cell.execution_count ?? 0),
+      0,
+    );
+    return set({ cells: nextCells, dirty: false, executionCounter });
   },
   addCell: (index, type) =>
     set((s) => {
@@ -192,6 +197,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
         cells: s.cells.map((c) =>
           c.id === id ? { ...c, outputs, execution_count: newCounter } : c
         ),
+        dirty: true,
       };
     }),
   deleteCell: (id) =>
