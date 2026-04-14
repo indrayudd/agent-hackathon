@@ -19,6 +19,8 @@ class InvestigationResult:
     cell_ids: list[str] = field(default_factory=list)
     plot_cell_ids: list[str] = field(default_factory=list)
     confidence: float = 0.5
+    # Explicit execution status (confidence is a separate "how sure" score).
+    status: str = "complete"  # "complete" | "failed" | "timeout"
     sub_findings: list[dict] = field(default_factory=list)
     images: dict[str, list[str]] = field(default_factory=dict)  # cell_id -> [base64 png]
     relevant_cols: list[str] = field(default_factory=list)
@@ -33,6 +35,7 @@ class InvestigationResult:
             "cell_ids": self.cell_ids,
             "plot_cell_ids": self.plot_cell_ids,
             "confidence": self.confidence,
+            "status": self.status,
             "sub_findings": self.sub_findings,
             "cell_sources": self.cell_sources,
             "cell_outputs": self.cell_outputs,
@@ -388,6 +391,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
         _LOG.warning("Subagent %s hit deadline before conclusion synthesis", hypothesis_id)
         result.finding = f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps but ran out of time."
         result.confidence = 0.2
+        result.status = "timeout"
         return result
 
     push_event(session_id, {
@@ -475,6 +479,7 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
         else:
             result.finding = f"Could not investigate '{hypothesis_title}' due to errors."
         result.confidence = 0.15
+        result.status = "failed"
 
     push_event(session_id, {
         "type": "thinking",

@@ -326,26 +326,57 @@ def run_agent(
                 _think("Checking column types to identify datetime, numeric, and categorical columns...")
                 _, outputs, error = _write_and_run(ct.inspect_dtypes_code())
                 if not error:
-                    # Parse dtypes from output
+                    # Parse dtypes from the machine-readable JSON emitted by inspect_dtypes_code().
+                    # Format: AGENTICEDA_DTYPES:{...json dict of col -> dtype string...}
+                    datetime_cols: list[str] = []
+                    dtypes_raw: dict[str, str] = {}
                     for o in outputs:
                         text = o.get("text", "")
                         for line in text.split("\n"):
-                            parts = line.strip().split()
-                            if len(parts) >= 2:
-                                col_name = " ".join(parts[:-1])
-                                dtype = parts[-1]
-                                # Skip pandas metadata lines like "dtype: object"
-                                if col_name.lower().rstrip(":") in ("dtype", "length", "name"):
-                                    continue
-                                if col_name and dtype in ("float64", "int64", "object", "datetime64[ns]", "bool", "str"):
-                                    state.dtypes[col_name] = dtype
-                                    if dtype in ("float64", "int64"):
-                                        if col_name not in state.numeric_cols:
-                                            state.numeric_cols.append(col_name)
-                                    elif dtype in ("object", "str"):
-                                        if col_name not in state.categorical_cols:
-                                            state.categorical_cols.append(col_name)
-                    state.columns = list(state.dtypes.keys())
+                            if line.startswith("AGENTICEDA_DTYPES:"):
+                                try:
+                                    dtypes_raw = json.loads(line[len("AGENTICEDA_DTYPES:"):])
+                                except json.JSONDecodeError:
+                                    pass
+                                break
+                        if dtypes_raw:
+                            break
+
+                    for col_name, dtype in dtypes_raw.items():
+                        if not col_name or not dtype:
+                            continue
+                        dtype_l = dtype.lower()
+                        state.dtypes[col_name] = dtype
+                        if dtype_l.startswith("datetime"):
+                            datetime_cols.append(col_name)
+                        elif dtype_l.startswith("float") or dtype_l.startswith("int"):
+                            if col_name not in state.numeric_cols:
+                                state.numeric_cols.append(col_name)
+                        elif dtype_l in ("object", "str", "string", "bool", "boolean", "category"):
+                            if col_name not in state.categorical_cols:
+                                state.categorical_cols.append(col_name)
+
+                    if state.dtypes:
+                        state.columns = list(state.dtypes.keys())
+
+                    # If a datetime column already exists, prefer it as the time axis.
+                    if datetime_cols and state.time_col is None:
+                        def _time_name_score(name: str) -> int:
+                            n = name.lower()
+                            score = 0
+                            if "timestamp" in n or "datetime" in n:
+                                score += 6
+                            if n == "time":
+                                score += 5
+                            if "time" in n:
+                                score += 4
+                            if n == "date":
+                                score += 4
+                            if "date" in n:
+                                score += 3
+                            return score
+
+                        state.time_col = sorted(datetime_cols, key=_time_name_score, reverse=True)[0]
                     _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "inspect_describe":
@@ -354,32 +385,85 @@ def run_agent(
                 _interpret_and_follow_up(outputs, error, goal, state, goals)
 
             elif goal.name == "parse_datetime":
-                # Find datetime candidates from categorical columns
-                candidates = [c for c in state.categorical_cols if any(
-                    kw in c.lower() for kw in ["date", "time", "timestamp", "dt", "year"]
-                )]
-                if not candidates and state.categorical_cols:
-                    candidates = state.categorical_cols[:1]  # try first object column
+                # Parse into a canonical time axis (__agenticeda_time) with quality gating.
+                def _score(name: str) -> int:
+                    n = name.lower()
+                    score = 0
+                    if "timestamp" in n or "datetime" in n:
+                        score += 6
+                    if n == "time":
+                        score += 5
+                    if "time" in n:
+                        score += 4
+                    if n == "date":
+                        score += 4
+                    if "date" in n:
+                        score += 3
+                    if n == "dt":
+                        score += 2
+                    if "year" in n:
+                        score += 1
+                    dtype_l = str(state.dtypes.get(name, "")).lower()
+                    if dtype_l.startswith("datetime"):
+                        score += 8
+                    elif score > 0 and (dtype_l.startswith("float") or dtype_l.startswith("int")):
+                        # Numeric + time-like name may indicate epoch seconds/ms.
+                        score += 2
+                    return score
 
-                if candidates:
-                    col = candidates[0]
-                    _think(f"'{col}' looks like a datetime column. Parsing it...")
-                    failed_cell_id, outputs, error = _write_and_run(ct.parse_datetime_code(col))
-                    if error:
-                        _think(f"Standard parsing failed for '{col}'. Trying with mixed format...")
-                        _, outputs, error = _backtrack_and_fix(
-                            error,
-                            f'df["{col}"] = pd.to_datetime(df["{col}"], errors="coerce", format="mixed")\nprint(f"Parsed with mixed format. NaT count: {{df[\'{col}\'].isna().sum()}}")\ndf = df.sort_values("{col}").reset_index(drop=True)',
-                            f"DateTime parse failed — retrying with format='mixed'",
-                            failed_cell_id,
-                        )
+                # Candidate split date+time columns (e.g., Date + Time).
+                date_candidates = [c for c in state.columns if "date" in c.lower()]
+                time_candidates = [
+                    c for c in state.columns
+                    if "time" in c.lower()
+                    and "datetime" not in c.lower()
+                    and "timestamp" not in c.lower()
+                ]
+
+                date_col = sorted(date_candidates, key=_score, reverse=True)[0] if date_candidates else None
+                time_col = sorted(time_candidates, key=_score, reverse=True)[0] if time_candidates else None
+
+                # Otherwise choose a single best candidate by name.
+                ranked = sorted(state.columns, key=_score, reverse=True)
+                single_col = ranked[0] if ranked and _score(ranked[0]) > 0 else None
+
+                chosen_time_col = None
+                chosen_date_col = None
+                if date_col and time_col and date_col != time_col:
+                    chosen_date_col = date_col
+                    chosen_time_col = time_col
+                elif single_col:
+                    chosen_time_col = single_col
+
+                if chosen_time_col:
+                    if chosen_date_col:
+                        _think(f"Combining '{chosen_date_col}' + '{chosen_time_col}' into a canonical datetime column...")
+                    else:
+                        _think(f"'{chosen_time_col}' looks like a datetime column. Parsing it into a canonical time axis...")
+
+                    _, outputs, error = _write_and_run(
+                        ct.parse_datetime_code(chosen_time_col, chosen_date_col)
+                    )
+
                     if not error:
-                        state.time_col = col
-                        state.add_finding("Data Cleaning", f"Parsed '{col}' as datetime")
-                        # Remove from categoricals
-                        if col in state.categorical_cols:
-                            state.categorical_cols.remove(col)
-                        _interpret_and_follow_up(outputs, error, goal, state, goals)
+                        out_text = _extract_output_text(outputs)
+                        parse_line = next(
+                            (ln for ln in out_text.splitlines() if ln.startswith("AGENTICEDA_TIME_PARSE ")),
+                            "",
+                        )
+                        ok = "ok=true" in parse_line
+                        if ok:
+                            state.time_col = "__agenticeda_time"
+                            state.add_finding("Data Cleaning", "Parsed canonical time axis '__agenticeda_time'")
+                        else:
+                            # Leave time_col unset so time-series steps are skipped (prevents blank charts).
+                            state.time_col = None
+                            state.add_finding(
+                                "Data Cleaning",
+                                "Time parsing attempted but quality was low; skipping time-series steps",
+                            )
+
+                    _interpret_and_follow_up(outputs, error, goal, state, goals)
                 else:
                     _think("No obvious datetime column found. Proceeding without time index.")
 
@@ -755,22 +839,40 @@ def run_agent(
                     cell_ids=data.get("cell_ids", []),
                     plot_cell_ids=data.get("plot_cell_ids", []),
                     confidence=data.get("confidence", 0.5),
+                    status=data.get("status", "complete"),
                     sub_findings=data.get("sub_findings", []),
                     relevant_cols=data.get("relevant_cols", []),
                     images=images,
                     cell_sources=data.get("cell_sources", {}),
                     cell_outputs=data.get("cell_outputs", {}),
                 )
-                results.append(result)
-                results_by_hyp[hyp.id] = result
-                state.subagent_run_count += 1
-                push_event(session_id, {
-                    "type": "subagent_complete",
-                    "hypothesis_id": hyp.id,
-                    "notebook_id": notebook_id,
-                    "finding": result.finding,
-                    "confidence": result.confidence,
-                })
+                if getattr(result, "status", "complete") == "complete":
+                    results.append(result)
+                    results_by_hyp[hyp.id] = result
+                    state.subagent_run_count += 1
+                    push_event(session_id, {
+                        "type": "subagent_complete",
+                        "hypothesis_id": hyp.id,
+                        "notebook_id": notebook_id,
+                        "finding": result.finding,
+                        "confidence": result.confidence,
+                        "status": "complete",
+                    })
+                elif getattr(result, "status", "complete") == "timeout":
+                    _LOG.warning("Subagent for %s hit internal deadline (timeout)", hyp.id)
+                    push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
+                    _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+                else:
+                    _LOG.warning("Subagent for %s returned failed result", hyp.id)
+                    push_event(session_id, {
+                        "type": "subagent_complete",
+                        "hypothesis_id": hyp.id,
+                        "notebook_id": notebook_id,
+                        "finding": result.finding,
+                        "confidence": result.confidence,
+                        "status": "failed",
+                    })
+                    _think(f"Investigation of '{hyp.title}' failed. Moving on.")
             elif status == "error":
                 _LOG.warning("Subagent for %s returned error: %s", hyp.id, data)
                 push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})

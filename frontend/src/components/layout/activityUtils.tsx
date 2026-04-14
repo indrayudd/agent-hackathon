@@ -92,6 +92,10 @@ export function getActivityLabel(entry: ActivityLogEntry): string {
     return "Backtracking";
   }
 
+  if (entry.activity === "failed") {
+    return "Investigation failed";
+  }
+
   if (entry.activity === "complete") {
     return "EDA complete";
   }
@@ -198,6 +202,16 @@ export function RetryIcon({ className }: { className?: string }) {
   );
 }
 
+export function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="6" />
+      <line x1="8" y1="4.5" x2="8" y2="8.5" />
+      <circle cx="8" cy="11" r="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function CheckIcon({ className }: { className?: string }) {
   return (
     <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -247,4 +261,5 @@ export const ACTIVITY_CONFIG: Record<AgentActivity, ActivityConfig> = {
   fixing:       { Icon: WrenchIcon,   color: "text-rose-600",    dotColor: "bg-rose-500",    ringColor: "ring-rose-300",    cardClass: "bg-rose-50/90 border-rose-200/80", accentClass: "from-rose-200 to-red-200", glyph: "build" },
   backtracking: { Icon: RetryIcon,    color: "text-orange-600",  dotColor: "bg-orange-500",  ringColor: "ring-orange-300",  cardClass: "bg-orange-50/90 border-orange-200/80", accentClass: "from-orange-200 to-amber-200", glyph: "replay" },
   complete:     { Icon: CheckIcon,    color: "text-emerald-600", dotColor: "bg-emerald-500", ringColor: "ring-emerald-300", cardClass: "bg-emerald-50/90 border-emerald-200/80", accentClass: "from-emerald-200 to-green-200", glyph: "check_circle" },
+  failed:       { Icon: AlertIcon,    color: "text-red-600",     dotColor: "bg-red-500",     ringColor: "ring-red-300",     cardClass: "bg-red-50/90 border-red-200/80",     accentClass: "from-red-200 to-rose-200", glyph: "error" },
 };

@@ -83,6 +83,9 @@ function getEntryType(entry: ActivityLogEntry): { label: string; color: string; 
   if (entry.activity === "complete") {
     return { label: "Result", color: "text-green-700", dotColor: "bg-green-500" };
   }
+  if (entry.activity === "failed") {
+    return { label: "Failed", color: "text-red-700", dotColor: "bg-red-500" };
+  }
   if (entry.activity === "thinking" || entry.activity === "executing") {
     return { label: "Reasoning", color: "text-violet-600", dotColor: "bg-violet-400" };
   }
@@ -187,9 +190,12 @@ function IntermediateEntry({
   const recovery = isRecoveryEntry(entry);
   const synthesis = isSynthesisEntry(entry);
   const isComplete = entry.activity === "complete";
+  const isFailed = entry.activity === "failed";
   const glyph = entry.activity === "fixing" && /error/i.test(entry.detail)
     ? "error"
-    : entry.activity === "backtracking"
+    : isFailed
+      ? "error"
+      : entry.activity === "backtracking"
       ? "replay"
       : synthesis
         ? "summarize"
@@ -199,6 +205,8 @@ function IntermediateEntry({
     ? "border-violet-200/90 bg-gradient-to-br from-violet-50 via-white to-sky-50"
     : recovery
       ? "border-rose-200/90 bg-gradient-to-br from-rose-50 via-white to-orange-50"
+      : isFailed
+        ? "border-red-200/90 bg-gradient-to-br from-red-50 via-white to-rose-50"
       : isComplete
         ? "border-emerald-200/90 bg-gradient-to-br from-emerald-50 via-white to-green-50"
         : "border-outline-variant/20 bg-white/95";

@@ -3,9 +3,9 @@
 import { useNotebookStore, type NotebookData } from "@/stores/notebookStore";
 
 export default function NotebookTabs() {
-  const notebooks = useNotebookStore((s: any) => s.notebooks) as Record<string, NotebookData>;
-  const activeId = useNotebookStore((s: any) => s.activeNotebookId) as string;
-  const setActive = useNotebookStore((s: any) => s.setActiveNotebook) as (id: string) => void;
+  const notebooks = useNotebookStore((s) => s.notebooks);
+  const activeId = useNotebookStore((s) => s.activeNotebookId);
+  const setActive = useNotebookStore((s) => s.setActiveNotebook);
 
   const tabs: NotebookData[] = Object.values(notebooks);
   if (tabs.length <= 1) return null;
@@ -53,6 +53,8 @@ export default function NotebookTabs() {
                   ? "schedule"
                   : nb.status === "complete"
                   ? "check_circle"
+                  : nb.status === "failed"
+                  ? "error"
                   : "timer_off"}
               </span>
             )}

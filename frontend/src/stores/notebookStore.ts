@@ -2,13 +2,13 @@ import { create } from "zustand";
 import type { Cell } from "@/lib/types";
 import { v4 as uuidv4 } from "uuid";
 
-export type AgentActivity = "idle" | "thinking" | "generating" | "executing" | "fixing" | "backtracking" | "complete";
+export type AgentActivity = "idle" | "thinking" | "generating" | "executing" | "fixing" | "backtracking" | "complete" | "failed";
 
 export interface NotebookData {
   id: string;
   title: string;
   cells: Cell[];
-  status: "idle" | "running" | "complete" | "timeout";
+  status: "idle" | "running" | "complete" | "failed" | "timeout";
 }
 
 export interface ActivityLogEntry {
@@ -83,7 +83,12 @@ export const useNotebookStore = create<NotebookState>((set) => ({
     // Deduplicate by ID, keeping last occurrence
     const seen = new Map<string, Cell>();
     for (const cell of cells) seen.set(cell.id, cell);
-    return set({ cells: Array.from(seen.values()), dirty: false });
+    const nextCells = Array.from(seen.values());
+    const executionCounter = nextCells.reduce(
+      (max, cell) => Math.max(max, cell.execution_count ?? 0),
+      0,
+    );
+    return set({ cells: nextCells, dirty: false, executionCounter });
   },
   addCell: (index, type) =>
     set((s) => {
@@ -192,6 +197,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
         cells: s.cells.map((c) =>
           c.id === id ? { ...c, outputs, execution_count: newCounter } : c
         ),
+        dirty: true,
       };
     }),
   deleteCell: (id) =>
@@ -325,12 +331,10 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       if (existing >= 0) {
         newCells = [...nb.cells];
         // Only merge non-empty fields to avoid overwriting source with ""
-        const merged = { ...newCells[existing] };
-        for (const [k, v] of Object.entries(cell)) {
-          if (v !== "" && v !== undefined && v !== null) {
-            (merged as any)[k] = v;
-          }
-        }
+        const nonEmptyUpdates = Object.fromEntries(
+          Object.entries(cell).filter(([, value]) => value !== "" && value !== undefined && value !== null),
+        ) as Partial<Cell>;
+        const merged: Cell = { ...newCells[existing], ...nonEmptyUpdates };
         // Always merge outputs and error even if "empty" (they represent real state)
         if (cell.outputs !== undefined) merged.outputs = cell.outputs;
         if (cell.error !== undefined) merged.error = cell.error;
@@ -365,7 +369,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
 
   getActiveNotebookCells: (): Cell[] => {
     // NOTE: call useNotebookStore.getState() at invocation time, not init time
-    const s = (useNotebookStore as any).getState();
+    const s = useNotebookStore.getState();
     const nb = s.notebooks[s.activeNotebookId];
     return nb ? nb.cells : [];
   },

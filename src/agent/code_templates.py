@@ -63,9 +63,9 @@ df.head()'''
 
 
 def inspect_dtypes_code() -> str:
-    return '''print("Column types:")
-print(df.dtypes)
-print(f"\\nShape: {df.shape}")'''
+    return '''import json as _json
+print("AGENTICEDA_DTYPES:" + _json.dumps(df.dtypes.astype(str).to_dict()))
+print(f"Shape: {df.shape}")'''
 
 
 def inspect_describe_code() -> str:
@@ -84,16 +84,178 @@ else:
     print("No missing values found!")'''
 
 
-def parse_datetime_code(col: str, format_str: str | None = None) -> str:
-    fmt_arg = f', format="{format_str}"' if format_str else ""
-    return f'''df["{col}"] = pd.to_datetime(df["{col}"], errors="coerce"{fmt_arg})
-n_nat = df["{col}"].isna().sum()
-print(f"Parsed '{col}' as datetime. {{n_nat}} unparseable values (NaT)")
-if n_nat > 0 and n_nat < 20:
-    print("Bad rows:")
-    print(df[df["{col}"].isna()])
-df = df.sort_values("{col}").reset_index(drop=True)
-print(f"Date range: {{df['{col}'].min()}} to {{df['{col}'].max()}}")'''
+def parse_datetime_code(
+    time_col: str,
+    date_col: str | None = None,
+    *,
+    min_valid_ratio: float = 0.9,
+) -> str:
+    """
+    Generate robust datetime parsing code.
+
+    Contract:
+    - Never clobber the original columns unless parsing quality is high.
+    - Create a canonical parsed time column: ``__agenticeda_time``.
+    - Print a machine-parseable line beginning with ``AGENTICEDA_TIME_PARSE``.
+    """
+    # NOTE: Keep this pure-string template code; the kernel already injects pd/np/plt.
+    date_col_expr = repr(date_col)  # Python literal: None or 'colname'
+    return f'''import pandas as pd
+import numpy as np
+
+__agenticeda_time_parse_ok = False
+__agenticeda_time_parse_strategy = ""
+__agenticeda_time_parse_valid_ratio = 0.0
+
+def _agenticeda_is_datetime(s):
+    try:
+        return pd.api.types.is_datetime64_any_dtype(s)
+    except Exception:
+        return False
+
+def _agenticeda_is_numeric(s):
+    try:
+        return pd.api.types.is_numeric_dtype(s)
+    except Exception:
+        return False
+
+def _agenticeda_clean_string_series(s):
+    s2 = s.astype(str).str.strip()
+    # Map common null tokens to missing
+    s2 = s2.replace({{
+        "": np.nan,
+        "nan": np.nan,
+        "NaN": np.nan,
+        "None": np.nan,
+        "none": np.nan,
+        "null": np.nan,
+        "NULL": np.nan,
+        "NaT": np.nan,
+    }})
+    return s2
+
+def _agenticeda_epoch_unit(series):
+    # Infer unit by magnitude of the median absolute value
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if len(s) == 0:
+        return None
+    v = float(s.abs().median())
+    # Rough thresholds: ns~1e18, us~1e15, ms~1e12, s~1e9 (for modern epochs)
+    if v >= 1e17:
+        return "ns"
+    if v >= 1e14:
+        return "us"
+    if v >= 1e11:
+        return "ms"
+    return "s"
+
+def _agenticeda_try_parse(series):
+    # Returns (parsed, strategy_name)
+    if _agenticeda_is_datetime(series):
+        return series, "already_datetime"
+
+    if _agenticeda_is_numeric(series):
+        unit = _agenticeda_epoch_unit(series)
+        if unit:
+            try:
+                return pd.to_datetime(series, errors="coerce", unit=unit), f"epoch_{{unit}}"
+            except Exception:
+                pass
+        return pd.to_datetime(series, errors="coerce"), "numeric_fallback"
+
+    s = _agenticeda_clean_string_series(series)
+
+    # Strategy 1: default parser
+    parsed = pd.to_datetime(s, errors="coerce")
+    return parsed, "string_default"
+
+def _agenticeda_score(parsed):
+    try:
+        return float(parsed.notna().mean())
+    except Exception:
+        return 0.0
+
+def _agenticeda_best_parse(series):
+    candidates = []
+
+    # Baseline
+    p0, s0 = _agenticeda_try_parse(series)
+    candidates.append((p0, s0, _agenticeda_score(p0)))
+
+    # Try dayfirst for strings (safe no-op otherwise)
+    try:
+        s = series
+        if not _agenticeda_is_datetime(series) and not _agenticeda_is_numeric(series):
+            s = _agenticeda_clean_string_series(series)
+        p1 = pd.to_datetime(s, errors="coerce", dayfirst=True)
+        candidates.append((p1, "string_dayfirst", _agenticeda_score(p1)))
+    except Exception:
+        pass
+
+    # Try pandas mixed format when supported (pandas>=2)
+    try:
+        s = series
+        if not _agenticeda_is_datetime(series) and not _agenticeda_is_numeric(series):
+            s = _agenticeda_clean_string_series(series)
+        p2 = pd.to_datetime(s, errors="coerce", format="mixed")
+        candidates.append((p2, "string_mixed", _agenticeda_score(p2)))
+    except Exception:
+        pass
+
+    best = max(candidates, key=lambda x: x[2])
+    return best[0], best[1], float(best[2])
+
+date_col = {date_col_expr}
+
+if date_col:
+    # Compose date+time into a single string column and parse that.
+    date_s = df[date_col]
+    time_s = df[{json.dumps(time_col)}]
+    if _agenticeda_is_datetime(date_s):
+        date_str = date_s.dt.strftime("%Y-%m-%d")
+    else:
+        date_str = _agenticeda_clean_string_series(date_s)
+
+    if _agenticeda_is_datetime(time_s):
+        time_str = time_s.dt.strftime("%H:%M:%S")
+    else:
+        time_str = _agenticeda_clean_string_series(time_s)
+
+    composed = (date_str.fillna("") + " " + time_str.fillna("")).str.strip()
+    parsed, strategy, valid_ratio = _agenticeda_best_parse(composed)
+    source_desc = str(date_col) + "+" + {json.dumps(time_col)}
+else:
+    parsed, strategy, valid_ratio = _agenticeda_best_parse(df[{json.dumps(time_col)}])
+    source_desc = {json.dumps(time_col)}
+
+total = int(len(df))
+nat_count = int(pd.isna(parsed).sum())
+min_dt = parsed.min() if parsed.notna().any() else None
+max_dt = parsed.max() if parsed.notna().any() else None
+
+__agenticeda_time_parse_valid_ratio = float(valid_ratio)
+__agenticeda_time_parse_strategy = str(strategy)
+__agenticeda_time_parse_ok = bool(valid_ratio >= {min_valid_ratio})
+
+print(
+    "AGENTICEDA_TIME_PARSE "
+    + f"source={{source_desc}} "
+    + f"ok={{str(__agenticeda_time_parse_ok).lower()}} "
+    + f"valid_ratio={{__agenticeda_time_parse_valid_ratio:.4f}} "
+    + f"nat={{nat_count}}/{{total}} "
+    + f"strategy={{__agenticeda_time_parse_strategy}}"
+)
+
+if __agenticeda_time_parse_ok:
+    df["__agenticeda_time"] = parsed
+    # Only sort when we have enough valid timestamps to establish order.
+    if df["__agenticeda_time"].notna().sum() >= 2:
+        df = df.sort_values("__agenticeda_time").reset_index(drop=True)
+    print(f"Date range: {{min_dt}} to {{max_dt}}")
+else:
+    # Keep the parsed values for debugging but avoid reordering/clobbering.
+    df["__agenticeda_time"] = parsed
+    print("Time parsing quality below threshold; preserving original column(s) and row order.")'''
 
 
 def handle_missing_ffill_code(col: str) -> str:

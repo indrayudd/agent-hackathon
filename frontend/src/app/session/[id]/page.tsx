@@ -89,6 +89,10 @@ function normalizeNotebookCells(payload: Record<string, unknown> | null): Cell[]
       outputs: normalizeOutputs(entry.outputs),
       execution_count:
         typeof entry.execution_count === "number" ? entry.execution_count : null,
+      metadata:
+        entry.metadata && typeof entry.metadata === "object"
+          ? (entry.metadata as Record<string, unknown>)
+          : undefined,
       executing: false,
       error: null,
     };

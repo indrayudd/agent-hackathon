@@ -39,6 +39,8 @@ class TestSubagentSignature(unittest.TestCase):
         result = InvestigationResult(hypothesis_id="h1", hypothesis_title="T", finding="F")
         assert hasattr(result, "images")
         assert isinstance(result.images, dict)
+        assert result.status == "complete"
+        assert result.to_dict()["status"] == "complete"
 
 
 class TestKGIntegration(unittest.TestCase):

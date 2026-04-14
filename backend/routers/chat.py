@@ -433,11 +433,28 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
                 cell_ids=data.get("cell_ids", []),
                 plot_cell_ids=data.get("plot_cell_ids", []),
                 confidence=data.get("confidence", 0.5),
+                status=data.get("status", "complete"),
                 sub_findings=data.get("sub_findings", []),
                 relevant_cols=data.get("relevant_cols", []),
                 images=images,
             )
-            _finalize_chat_investigation(session_id, hyp, chat_notebook_id, result)
+            if getattr(result, "status", "complete") == "complete":
+                _finalize_chat_investigation(session_id, hyp, chat_notebook_id, result)
+            elif getattr(result, "status", "complete") == "timeout":
+                push_event(session_id, {
+                    "type": "subagent_timeout",
+                    "hypothesis_id": hyp.id,
+                    "notebook_id": chat_notebook_id,
+                })
+            else:
+                push_event(session_id, {
+                    "type": "subagent_complete",
+                    "hypothesis_id": hyp.id,
+                    "notebook_id": chat_notebook_id,
+                    "finding": result.finding,
+                    "confidence": result.confidence,
+                    "status": "failed",
+                })
         else:
             _LOG.warning("Chat investigation failed: %s", data)
             push_event(session_id, {
@@ -446,6 +463,7 @@ def _run_hypothesis_investigation(session_id: str, state: dict, hyp, user_questi
                 "notebook_id": chat_notebook_id,
                 "finding": f"Investigation failed: {data}",
                 "confidence": 0.0,
+                "status": "failed",
             })
 
     bg = threading.Thread(target=_background_finish, daemon=True)
@@ -548,4 +566,5 @@ def _finalize_chat_investigation(session_id: str, hyp, chat_notebook_id: str, re
         "notebook_id": chat_notebook_id,
         "finding": result.finding,
         "confidence": result.confidence,
+        "status": "complete",
     })

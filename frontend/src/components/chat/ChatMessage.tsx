@@ -7,11 +7,26 @@ import type { ChatMessage as ChatMessageType } from "@/lib/types";
 interface ChatMessageProps {
   message: ChatMessageType;
   onViewCell?: (cellId: string) => void;
+  onOpenNotebook?: (notebookId: string) => void;
 }
 
-export default function ChatMessage({ message, onViewCell }: ChatMessageProps) {
+type InvestigationStatus = NonNullable<ChatMessageType["meta"]>["status"];
+
+function statusBadge(status?: InvestigationStatus) {
+  const s = status || "running";
+  const base = "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold";
+  if (s === "complete") return { label: "Complete", className: `${base} bg-emerald-500/10 text-emerald-700` };
+  if (s === "failed") return { label: "Failed", className: `${base} bg-red-500/10 text-red-700` };
+  if (s === "timeout") return { label: "Timed out", className: `${base} bg-amber-500/10 text-amber-700` };
+  if (s === "started") return { label: "Started", className: `${base} bg-primary/10 text-primary` };
+  return { label: "Running", className: `${base} bg-primary/10 text-primary` };
+}
+
+export default function ChatMessage({ message, onViewCell, onOpenNotebook }: ChatMessageProps) {
   const isUser = message.role === "user";
   const isAction = message.type === "action";
+  const isInvestigation = message.meta?.kind === "investigation";
+  const badge = isInvestigation ? statusBadge(message.meta?.status) : null;
 
   return (
     <div className={`flex items-start gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -40,10 +55,33 @@ export default function ChatMessage({ message, onViewCell }: ChatMessageProps) {
           <p className="text-sm font-body leading-6 whitespace-pre-wrap">{message.content}</p>
         ) : (
           <div className="space-y-2">
-            {isAction && (
-              <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
-                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                Agent update
+            <div className="flex items-center justify-between gap-2">
+              {isInvestigation ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                    Investigation
+                  </div>
+                  {badge && <span className={badge.className}>{badge.label}</span>}
+                </div>
+              ) : isAction ? (
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                  Agent update
+                </div>
+              ) : (
+                <div />
+              )}
+              {typeof message.meta?.confidence === "number" && (
+                <span className="text-[10px] font-medium text-on-surface-variant">
+                  Confidence: {Math.round(message.meta.confidence * 100)}%
+                </span>
+              )}
+            </div>
+
+            {isInvestigation && message.meta?.title && (
+              <div className="text-xs font-semibold text-on-surface">
+                {message.meta.title}
               </div>
             )}
             <div className="text-sm font-body text-on-surface prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:rounded prose-code:bg-surface-container prose-code:px-1.5 prose-code:py-0.5 prose-code:before:content-none prose-code:after:content-none">
@@ -52,6 +90,16 @@ export default function ChatMessage({ message, onViewCell }: ChatMessageProps) {
               </ReactMarkdown>
             </div>
           </div>
+        )}
+
+        {message.meta?.notebook_id && onOpenNotebook && (
+          <button
+            onClick={() => onOpenNotebook(message.meta!.notebook_id!)}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-outline-variant/20 bg-surface-container px-2 py-1 text-xs text-on-surface hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-[16px] text-primary">science</span>
+            Open investigation tab
+          </button>
         )}
 
         {message.cell_id && onViewCell && (

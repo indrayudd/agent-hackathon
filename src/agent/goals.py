@@ -46,7 +46,8 @@ def build_goal_checklist() -> list[EDAGoal]:
             name="parse_datetime",
             phase="Data Cleaning",
             description="Parse datetime columns",
-            skip_condition=lambda s: s.time_col is not None,  # already parsed
+            # Only skip once we have a canonical, quality-checked time axis.
+            skip_condition=lambda s: s.time_col == "__agenticeda_time",
         ),
         EDAGoal(
             name="check_missing",
