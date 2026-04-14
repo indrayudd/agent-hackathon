@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback } from "react";
 import type { StoryPlot, StorySection } from "@/lib/types";
 import StoryPlotRenderer from "./StoryPlotRenderer";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 interface PlotCarouselProps {
   plots: Array<StoryPlot | string>;
@@ -159,14 +162,18 @@ export default function PlotCarousel({
         <div className="mt-3 flex items-start justify-between gap-4 px-1">
           <div className="min-w-0">
             {title && (
-              <p className="text-sm font-semibold tracking-tight text-on-surface">
-                {title}
-              </p>
+              <div className="text-sm font-semibold tracking-tight text-on-surface [&_p]:m-0">
+                <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                  {title}
+                </ReactMarkdown>
+              </div>
             )}
             {caption && (
-              <p className="mt-0.5 text-[13px] italic leading-5 text-on-surface-variant">
-                {caption}
-              </p>
+              <div className="mt-0.5 text-[13px] italic leading-5 text-on-surface-variant [&_p]:m-0">
+                <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                  {caption}
+                </ReactMarkdown>
+              </div>
             )}
           </div>
           {canOpenCell && (
