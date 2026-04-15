@@ -37,6 +37,24 @@ function applyOutsideMath(
 function sanitizeLatex(text: string): string {
   let t = text;
 
+  // === Pass 0: Fix GFM strikethrough false positives and corrupted Unicode ===
+  t = applyOutsideMath(t, [
+    // "~~1200" triggers GFM ~~strikethrough~~. Escape ~~ when not intentional.
+    [/~~(?=\d|[A-Z])/g, "\\~\\~"],
+    // Fix corrupted Unicode: Ö3b8 → θ, Ö3b7 → η, etc. (Python \u escape mangled)
+    [/[Öö]3b8/g, "$\\theta$"],
+    [/[Öö]3b7/g, "$\\eta$"],
+    [/[Öö]3b1/g, "$\\alpha$"],
+    [/[Öö]3b2/g, "$\\beta$"],
+    [/[Öö]3b3/g, "$\\gamma$"],
+    [/[Öö]3b4/g, "$\\delta$"],
+    [/[Öö]3b5/g, "$\\epsilon$"],
+    [/[Öö]3c3/g, "$\\sigma$"],
+    [/[Öö]3c1/g, "$\\rho$"],
+    [/[Öö]3c7/g, "$\\chi$"],
+    [/[Öö]3bc/g, "$\\mu$"],
+  ]);
+
   // === Pass 1: Compound patterns (must run first, before pieces get wrapped) ===
   t = applyOutsideMath(t, [
     // "text{foo}" → "$\text{foo}$" (Python \t ate backslash)
@@ -79,8 +97,8 @@ function sanitizeLatex(text: string): string {
     // \times, \approx etc. with backslash
     [/\\(times|approx|geq|leq|pm|Delta|delta|chi|rho|sigma|mu|alpha|beta|gamma|lambda|infty|neq|sim|propto|cdot|ldots|ge|le|ll|gg|equiv|eta|theta|phi|psi|omega|epsilon|kappa|tau|pi|zeta|nu|xi)(?![a-zA-Z{])/g,
       (_m: string, cmd: string) => `$\\${cmd}$`],
-    // Bare Greek letters without backslash (Python ate them)
-    [/(?<![a-zA-Z\\])(eta|rho|chi|sigma|mu|alpha|beta|gamma|delta|lambda|theta|phi|psi|omega|epsilon|kappa|tau|pi|zeta|nu|xi)(?=[\s^_=<>.,;:)\]0-9]|$)/g,
+    // Bare Greek/math commands without backslash (Python ate them)
+    [/(?<![a-zA-Z\\])(Delta|Sigma|Omega|Gamma|Lambda|eta|rho|chi|sigma|mu|alpha|beta|gamma|delta|lambda|theta|phi|psi|omega|epsilon|kappa|tau|pi|zeta|nu|xi|ll|gg|sim|approx|infty|neq|equiv|propto)(?=[^a-z]|$)/g,
       (_m: string, cmd: string) => `$\\${cmd}$`],
     // Bare "sim" and "approx" before numbers
     [/(?<![a-zA-Z])sim(\d)/g, (_m: string, d: string) => `$\\sim$${d}`],
@@ -106,6 +124,12 @@ function sanitizeLatex(text: string): string {
   t = t.replace(/\$([^$]+)\$\^(\{[^}]+\}|\d+)/g, (_m, inner, exp) => `$${inner}^${exp}$`);
   // $\text{foo}$_{bar} → $\text{foo}_{bar}$
   t = t.replace(/\$([^$]+)\$_(\{[^}]+\})/g, (_m, inner, sub) => `$${inner}_${sub}$`);
+  // $\Delta$R^2 → $\Delta R^2$ (merge symbol + adjacent letter with exponent)
+  t = t.replace(/\$([^$]+)\$([A-Za-z])\^(\{[^}]+\}|\d+)/g,
+    (_m, inner, letter, exp) => `$${inner} ${letter}^{${exp}}$`);
+  // $\Delta$R → $\Delta R$ (merge symbol + adjacent single letter)
+  t = t.replace(/\$([^$]+)\$([A-Za-z])(?=[\s=<>,;:)\]]|$)/g,
+    (_m, inner, letter) => `$${inner} ${letter}$`);
 
   // Clean up empty math blocks
   t = t.replace(/\$\s*\$/g, "");
