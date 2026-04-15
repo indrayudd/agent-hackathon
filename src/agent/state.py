@@ -41,6 +41,7 @@ class AgentState:
     subagent_run_count: int = 0
     max_subagents: int = 3
     max_loops: int = 2
+    plan_steps: list[dict] = field(default_factory=list)  # current execution plan for REST endpoint
 
     def add_finding(self, phase: str, finding: str):
         self.findings.append({"phase": phase, "finding": finding})

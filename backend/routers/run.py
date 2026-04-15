@@ -317,3 +317,21 @@ async def pipeline_status(session_id: str):
         return {"status": "idle"}
 
     return json.loads(status_file.read_text())
+
+
+@router.get("/run/{session_id}/plan")
+async def get_plan(session_id: str):
+    """Return the current execution plan for a session."""
+    try:
+        session_dir = get_session_dir(session_id)
+    except FileNotFoundError:
+        return {"steps": []}
+
+    plan_file = session_dir / "plan.json"
+    if not plan_file.exists():
+        return {"steps": []}
+
+    try:
+        return json.loads(plan_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"steps": []}

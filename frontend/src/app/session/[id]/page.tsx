@@ -187,7 +187,8 @@ export default function SessionPage() {
       getNotebook(sessionId),
       getStory(sessionId, "json"),
       fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/run/${sessionId}/status`).then(r => r.json()).catch(() => null),
-    ]).then(([sessionsResult, notebookResult, storyResult, statusResult]) => {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/run/${sessionId}/plan`).then(r => r.json()).catch(() => null),
+    ]).then(([sessionsResult, notebookResult, storyResult, statusResult, planResult]) => {
       if (cancelled) return;
 
       if (sessionsResult.status === "fulfilled") {
@@ -200,6 +201,11 @@ export default function SessionPage() {
         if (runStatus === "completed" || runStatus === "failed" || runStatus === "idle") {
           useNotebookStore.getState().setPipelineRunning(false);
         }
+      }
+
+      // Hydrate execution plan from persisted state
+      if (planResult.status === "fulfilled" && planResult.value?.steps?.length) {
+        useNotebookStore.getState().setPlanSteps(planResult.value.steps);
       }
 
       const notebook =

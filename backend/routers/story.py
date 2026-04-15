@@ -962,23 +962,28 @@ def _export_story_pdf(story: dict) -> bytes:
             fh.write(tex)
 
         # Compile with tectonic
-        result = subprocess.run(
-            [TECTONIC, "--chatter", "minimal", tex_path],
-            cwd=temp_dir,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        pdf_path = os.path.join(temp_dir, "report.pdf")
-        if os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as fh:
-                return fh.read()
+        try:
+            result = subprocess.run(
+                [TECTONIC, "--chatter", "minimal", tex_path],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            pdf_path = os.path.join(temp_dir, "report.pdf")
+            if os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as fh:
+                    return fh.read()
+            _LOG.warning("tectonic failed: %s\n%s", result.stdout, result.stderr)
+        except (FileNotFoundError, OSError) as exc:
+            _LOG.warning("tectonic not available: %s", exc)
+        except subprocess.TimeoutExpired:
+            _LOG.warning("tectonic timed out after 120s")
 
-        _LOG.warning("tectonic failed: %s\n%s", result.stdout, result.stderr)
         # Fallback to WeasyPrint
         try:
             import weasyprint
-            html_content = _story_to_ieee_html(story)
+            html_content = _story_to_ieee_html_legacy(story)
             return weasyprint.HTML(string=html_content).write_pdf()
         except Exception:
             return _build_minimal_pdf(story)

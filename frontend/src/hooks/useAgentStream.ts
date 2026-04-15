@@ -29,6 +29,7 @@ type StreamEvent =
   | { type: "accumulation_progress"; step?: number; total?: number; label?: string; notebook_id?: string }
   | { type: "notebook_clear"; notebook_id?: string }
   | { type: "notebook_focus"; notebook_id?: string }
+  | { type: "plan_update"; steps?: Array<{ phase: string; status: string; details?: Array<{ label: string; status: string }> }> }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -358,6 +359,21 @@ export function useAgentStream(sessionId: string) {
 
           case "loop_complete":
             store.setAgentActivity("thinking", `Loop ${data.loop_number} complete, analyzing results...`, { notebookId: "main" });
+            break;
+
+          case "plan_update":
+            if (data.steps) {
+              store.setPlanSteps(
+                data.steps.map((s) => ({
+                  phase: s.phase,
+                  status: s.status as "complete" | "current" | "skipped" | "upcoming",
+                  details: s.details?.map((d) => ({
+                    label: d.label,
+                    status: d.status as "complete" | "current" | "skipped" | "upcoming",
+                  })),
+                })),
+              );
+            }
             break;
 
           case "complete":

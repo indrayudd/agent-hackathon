@@ -6,6 +6,7 @@ import { useNotebookStore } from "@/stores/notebookStore";
 import { useChat } from "@/hooks/useChat";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
+import ExecutionPlan from "./ExecutionPlan";
 
 interface ChatSidebarProps {
   sessionId: string;
@@ -65,6 +66,7 @@ export default function ChatSidebar({ sessionId, collapsed, onToggle }: ChatSide
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <ExecutionPlan />
         {messages.length === 0 && !pipelineRunning && (
           <div className="mt-8 space-y-4">
             <div className="text-center text-on-surface-variant text-sm">

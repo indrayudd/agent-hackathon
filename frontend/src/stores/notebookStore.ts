@@ -4,6 +4,17 @@ import { v4 as uuidv4 } from "uuid";
 
 export type AgentActivity = "idle" | "thinking" | "generating" | "executing" | "fixing" | "backtracking" | "complete" | "failed";
 
+export interface PlanStepDetail {
+  label: string;
+  status: "complete" | "current" | "skipped" | "upcoming";
+}
+
+export interface PlanStep {
+  phase: string;
+  status: "complete" | "current" | "skipped" | "upcoming";
+  details?: PlanStepDetail[];
+}
+
 export interface NotebookData {
   id: string;
   title: string;
@@ -54,6 +65,8 @@ interface NotebookState {
   addHypothesisGroup: (id: string, title: string) => void;
   setAgentActivity: (activity: AgentActivity, detail: string, extra?: Partial<Pick<ActivityLogEntry, "cellId" | "cellType" | "hypothesisId" | "notebookId">>) => void;
   addChatAction: (detail: string, actionType: string) => void;
+  planSteps: PlanStep[];
+  setPlanSteps: (steps: PlanStep[]) => void;
   clearActivityLog: () => void;
   resetForNewSession: () => void;
   activeTab: "notebook" | "story" | "history";
@@ -78,6 +91,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
   agentActivity: "idle" as AgentActivity,
   agentActivityDetail: "",
   activityLog: [],
+  planSteps: [],
   fixedCellIds: new Set<string>(),
   setCells: (cells) => {
     // Deduplicate by ID, keeping last occurrence
@@ -263,6 +277,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       };
       return { activityLog: [...s.activityLog, entry] };
     }),
+  setPlanSteps: (planSteps) => set({ planSteps }),
   clearActivityLog: () =>
     set({ activityLog: [], agentActivity: "idle" as AgentActivity, agentActivityDetail: "" }),
   resetForNewSession: () =>
@@ -276,6 +291,7 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       agentActivity: "idle" as AgentActivity,
       agentActivityDetail: "",
       activityLog: [],
+      planSteps: [],
       hypothesisGroups: [],
       fixedCellIds: new Set<string>(),
       activeTab: "notebook" as "notebook" | "story" | "history",

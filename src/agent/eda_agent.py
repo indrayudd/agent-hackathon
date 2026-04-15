@@ -48,6 +48,67 @@ def run_agent(
     current_phase = ""
     last_code_cell_id: str | None = None
 
+    # ---- Execution Plan tracking ----
+    _current_goal_name: str | None = None
+
+    def _build_plan_phases(current_goal_name: str | None = None) -> list[dict]:
+        """Collapse goals into unique phases with status and sub-item details.
+
+        Two modes:
+        - current_goal_name provided: everything before it = complete,
+          it = current, everything after = upcoming.
+        - current_goal_name is None: rely on state.phases_completed only.
+          Completed phases = complete, others = upcoming.
+        """
+        from collections import OrderedDict
+        phases: OrderedDict[str, dict] = OrderedDict()  # phase -> {status, details}
+        found_current = False
+        for g in goals:
+            skipped = g.should_skip(state)
+            if skipped and g.phase not in phases:
+                continue
+
+            if current_goal_name is not None:
+                # Explicit current goal — position-based status
+                if g.name == current_goal_name:
+                    goal_status = "current"
+                    found_current = True
+                elif found_current:
+                    goal_status = "upcoming"
+                else:
+                    goal_status = "complete"
+            else:
+                # No current goal — use phases_completed as source of truth
+                if g.phase in state.phases_completed:
+                    goal_status = "complete"
+                else:
+                    goal_status = "upcoming"
+
+            detail = {"label": g.description, "status": goal_status}
+            if g.phase not in phases:
+                phases[g.phase] = {"status": goal_status, "details": [detail]}
+            else:
+                phases[g.phase]["details"].append(detail)
+                if goal_status == "current":
+                    phases[g.phase]["status"] = "current"
+        return [{"phase": p, "status": d["status"], "details": d["details"]}
+                for p, d in phases.items()]
+
+    def _push_plan(current_goal_name: str | None = None, extra_phases: list[dict] | None = None):
+        """Emit a plan_update event with collapsed phase-level steps."""
+        steps = _build_plan_phases(current_goal_name)
+        if extra_phases:
+            steps.extend(extra_phases)
+        push_event(session_id, {"type": "plan_update", "steps": steps})
+        state.plan_steps = steps
+        # Persist for REST endpoint on page reload
+        try:
+            from backend.services.session_manager import get_session_dir
+            plan_path = get_session_dir(session_id) / "plan.json"
+            plan_path.write_text(json.dumps({"steps": steps}))
+        except Exception:
+            pass
+
     def _think(content: str):
         push_event(session_id, {"type": "thinking", "content": content, "notebook_id": "main"})
         time.sleep(0.02)
@@ -277,12 +338,16 @@ def run_agent(
 
     # ---- Execute goals ----
 
+    # Emit initial plan (all upcoming)
+    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "upcoming"}, {"phase": "Report Generation", "status": "upcoming"}])
+
     for goal in goals:
         if goal.should_skip(state):
             _LOG.info("Skipping goal: %s (condition met)", goal.name)
             continue
 
         _transition(goal.phase, goal.description)
+        _push_plan(goal.name, extra_phases=[{"phase": "Deep Investigation", "status": "upcoming"}, {"phase": "Report Generation", "status": "upcoming"}])
 
         try:
             if goal.name == "load_dataset":
@@ -589,6 +654,9 @@ def run_agent(
         _LOG.warning("Dataset checkpoint not found at %s — subagents will use main kernel", cache_path)
 
     _transition("Investigation Phase", "Generating hypotheses from initial findings...", render_cell=False)
+    # Track investigation sub-items (hypothesis titles + statuses)
+    _investigation_details: list[dict] = [{"label": "Generating hypotheses...", "status": "current"}]
+    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
     findings_summary = "\n".join(f"- {f.get('finding', '')}" for f in state.findings if f.get('finding'))
     _write_and_run(
         "---\n\n"
@@ -683,6 +751,13 @@ def run_agent(
             "hypothesis_ids": [h.id for h in hypotheses],
             "titles": [h.title for h in hypotheses],
         })
+
+        # Update investigation plan — accumulate hypotheses across loops
+        # Remove the placeholder "Generating hypotheses..." if still present
+        _investigation_details[:] = [d for d in _investigation_details if d.get("label") != "Generating hypotheses..."]
+        for h in hypotheses:
+            _investigation_details.append({"label": h.title, "status": "current"})
+        _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
 
         # Allocate subagent kernels for parallel execution
         sub_kernel_ids = [None] * len(hypotheses)
@@ -846,6 +921,13 @@ def run_agent(
                     cell_sources=data.get("cell_sources", {}),
                     cell_outputs=data.get("cell_outputs", {}),
                 )
+                def _mark_hyp_done(title: str, detail_status: str = "complete"):
+                    for d in _investigation_details:
+                        if d["label"] == title:
+                            d["status"] = detail_status
+                            break
+                    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
+
                 if getattr(result, "status", "complete") == "complete":
                     results.append(result)
                     results_by_hyp[hyp.id] = result
@@ -858,10 +940,12 @@ def run_agent(
                         "confidence": result.confidence,
                         "status": "complete",
                     })
+                    _mark_hyp_done(hyp.title, "complete")
                 elif getattr(result, "status", "complete") == "timeout":
                     _LOG.warning("Subagent for %s hit internal deadline (timeout)", hyp.id)
                     push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
                     _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+                    _mark_hyp_done(hyp.title, "complete")
                 else:
                     _LOG.warning("Subagent for %s returned failed result", hyp.id)
                     push_event(session_id, {
@@ -873,14 +957,17 @@ def run_agent(
                         "status": "failed",
                     })
                     _think(f"Investigation of '{hyp.title}' failed. Moving on.")
+                    _mark_hyp_done(hyp.title, "complete")
             elif status == "error":
                 _LOG.warning("Subagent for %s returned error: %s", hyp.id, data)
                 push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
                 _think(f"Investigation of '{hyp.title}' failed. Moving on.")
+                _mark_hyp_done(hyp.title, "complete")
             else:
                 _LOG.warning("Subagent for %s: no result received (timeout)", hyp.id)
                 push_event(session_id, {"type": "subagent_timeout", "hypothesis_id": hyp.id, "notebook_id": notebook_id})
                 _think(f"Investigation of '{hyp.title}' timed out. Moving on.")
+                _mark_hyp_done(hyp.title, "complete")
 
         # Wait for event drainer to finish
         drain_done.wait(timeout=10)
@@ -1020,6 +1107,7 @@ def run_agent(
 
     # Synthesize conclusions via LLM — connect threads, identify contradictions, rank
     _transition("Conclusions", "Synthesizing all findings...", render_cell=False)
+    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "complete"}, {"phase": "Report Generation", "status": "current", "details": [{"label": "Synthesizing conclusions", "status": "current"}]}])
     raw_conclusions = kg.get_top_conclusions(8)
     all_findings_text = "\n".join(
         f"- [{f.get('phase', '')}] {f.get('finding', '')} (raw: {f.get('raw_output', '')[:200]})"
@@ -1073,6 +1161,8 @@ def run_agent(
     state.knowledge_graph = kg
 
     # ---- Done ----
+    # Mark all plan steps complete
+    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "complete"}, {"phase": "Report Generation", "status": "complete"}])
     push_event(session_id, {
         "type": "complete",
         "summary": state.summarize(),
