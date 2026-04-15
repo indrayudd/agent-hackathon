@@ -38,11 +38,13 @@ function sanitizeLatex(text: string): string {
   let t = text;
 
   // === Pass 0: Fix markdown/GFM issues and corrupted Unicode ===
-  // Strip dangling ** that break bold spans (common when LLM wraps math in **)
-  // Pattern: ** at start/end of values like "** p= 2.368\ntimes10^{-10}**"
-  // Replace ** adjacent to math/numbers with nothing — the content is better without broken bold
-  t = t.replace(/\*\*\s*(p\s*=|D\s*=|F\s*=|r\s*=|t\s*=)/g, (_m, eq) => eq);
-  t = t.replace(/([\d}$])\s*\*\*/g, (_m, pre) => pre);
+  // Fix unpaired ** bold markers. When content is split into paragraphs,
+  // bold spans can break (opening ** in one paragraph, closing in another).
+  // Count ** occurrences — if odd, strip all ** (better than broken rendering).
+  const boldCount = (t.match(/\*\*/g) || []).length;
+  if (boldCount % 2 !== 0) {
+    t = t.replace(/\*\*/g, "");
+  }
   t = applyOutsideMath(t, [
     // "~~1200" triggers GFM ~~strikethrough~~. Escape ~~ when not intentional.
     [/~~(?=\d|[A-Z])/g, "\\~\\~"],

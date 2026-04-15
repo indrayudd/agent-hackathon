@@ -88,33 +88,33 @@ export default function ChatMessage({ message, onViewCell, onOpenNotebook }: Cha
           <p className="text-sm font-body leading-6 whitespace-pre-wrap">{message.content}</p>
         ) : (
           <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              {isInvestigation ? (
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                {isInvestigation ? (
+                  <>
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      Investigation
+                    </div>
+                    {badge && <span className={badge.className}>{badge.label}</span>}
+                  </>
+                ) : isAction ? (
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
                     <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    Investigation
+                    Agent update
                   </div>
-                  {badge && <span className={badge.className}>{badge.label}</span>}
-                </div>
-              ) : isAction ? (
-                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
-                  <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Agent update
-                </div>
-              ) : (
-                <div />
-              )}
+                ) : null}
+              </div>
               {typeof message.meta?.confidence === "number" && (
-                <div className="flex items-center gap-1 shrink-0" title={`Confidence: ${Math.round(message.meta.confidence * 100)}%`}>
-                  <div className="w-12 h-1.5 rounded-full bg-outline-variant/20 overflow-hidden">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-16 h-1.5 rounded-full bg-outline-variant/20 overflow-hidden">
                     <div
                       className="h-full rounded-full bg-primary"
                       style={{ width: `${Math.round(message.meta.confidence * 100)}%` }}
                     />
                   </div>
-                  <span className="text-[9px] font-medium text-on-surface-variant whitespace-nowrap">
-                    {Math.round(message.meta.confidence * 100)}%
+                  <span className="text-[9px] font-medium text-on-surface-variant">
+                    {Math.round(message.meta.confidence * 100)}% confidence
                   </span>
                 </div>
               )}

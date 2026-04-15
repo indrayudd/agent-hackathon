@@ -73,6 +73,10 @@ export default function StorySectionCard({
 
   const content = (section.summary || section.content || "")
     .replace(/\\n/g, "\n")
+    // Fix broken list prefixes: "- - " → "- " (common in LLM output)
+    .replace(/^- - /gm, "- ")
+    // Fix "- - -" section breaks that become broken lists
+    .replace(/^- - -$/gm, "---")
     .trim();
   const paragraphs = content
     .split(/\n{2,}/)
