@@ -3,6 +3,7 @@ numpy
 pandas
 pydantic
 matplotlib
+seaborn
 
 # Environment/config
 python-dotenv
