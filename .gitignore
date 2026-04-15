@@ -34,3 +34,6 @@ output/
 *.log
 reference_repos/
 nginx/active.conf
+landing.png
+plan-*.png
+session-page.png
