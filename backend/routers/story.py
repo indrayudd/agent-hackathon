@@ -18,6 +18,8 @@ from fastapi.responses import PlainTextResponse, Response
 
 import nbformat
 
+from backend.routers.stream import push_event
+
 from backend.services.session_manager import get_session_dir
 from src.reporting.plot_contract import (
     build_report_viz_spec,
@@ -1246,6 +1248,14 @@ async def regenerate_story(session_id: str):
             conclusions.append(f.get("finding", ""))
         conclusions = conclusions[:5]
 
+    # Emit regen progress via stream
+    def _regen_progress(details: list[dict]):
+        push_event(session_id, {"type": "plan_update", "steps": [
+            {"phase": "Regenerating Report", "status": "current", "details": details},
+        ]})
+
+    _regen_progress([{"label": "Loading knowledge graph", "status": "complete"}, {"label": "Building sections", "status": "current"}])
+
     # Merge: start with KG sections, then append any story.json sections not in KG
     kg_titles = {s.get("title", "") for s in kg_sections}
     existing_sections = old_data.get("sections", [])
@@ -1310,6 +1320,12 @@ async def regenerate_story(session_id: str):
         except Exception as exc:
             _LOG.warning("Plot extraction during regeneration failed: %s", exc)
 
+    _regen_progress([
+        {"label": "Loading knowledge graph", "status": "complete"},
+        {"label": "Building sections", "status": "complete"},
+        {"label": "Extracting plots", "status": "complete"},
+        {"label": "Writing executive summary", "status": "current"},
+    ])
     # Generate executive summary via LLM
     narrative = ""
     try:
@@ -1341,6 +1357,13 @@ async def regenerate_story(session_id: str):
         if not narrative:
             narrative = "Key findings: " + "; ".join(s.get("title", "") for s in sections[:10])
 
+    _regen_progress([
+        {"label": "Loading knowledge graph", "status": "complete"},
+        {"label": "Building sections", "status": "complete"},
+        {"label": "Extracting plots", "status": "complete"},
+        {"label": "Writing executive summary", "status": "complete"},
+        {"label": "Curating plots and captions", "status": "current"},
+    ])
     from src.reporting.story_builder import build_curated_story
 
     story_data = build_curated_story(
@@ -1352,8 +1375,19 @@ async def regenerate_story(session_id: str):
     if kg is not None:
         story_data["knowledge_graph"] = kg.to_dict()
 
+    _regen_progress([
+        {"label": "Loading knowledge graph", "status": "complete"},
+        {"label": "Building sections", "status": "complete"},
+        {"label": "Extracting plots", "status": "complete"},
+        {"label": "Writing executive summary", "status": "complete"},
+        {"label": "Curating plots and captions", "status": "complete"},
+        {"label": "Saving report", "status": "current"},
+    ])
     story_path = session_dir / "story.json"
     atomic_write_json(story_path, story_data)
+
+    # Clear the regen plan
+    push_event(session_id, {"type": "plan_update", "steps": []})
 
     _LOG.info("Story regenerated for session %s: %d sections, kg=%s", session_id, len(sections), kg is not None)
 

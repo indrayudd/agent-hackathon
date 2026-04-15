@@ -1,7 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import { sanitizeLatex } from "@/components/story/StoryMarkdown";
 import type { ChatMessage as ChatMessageType } from "@/lib/types";
 
 interface ChatMessageProps {
@@ -20,6 +24,35 @@ function statusBadge(status?: InvestigationStatus) {
   if (s === "timeout") return { label: "Timed out", className: `${base} bg-amber-500/10 text-amber-700` };
   if (s === "started") return { label: "Started", className: `${base} bg-primary/10 text-primary` };
   return { label: "Running", className: `${base} bg-primary/10 text-primary` };
+}
+
+const TRUNCATE_LENGTH = 250;
+
+function ChatContent({ content, isInvestigation }: { content: string; isInvestigation: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const needsTruncation = isInvestigation && content.length > TRUNCATE_LENGTH;
+  const displayText = needsTruncation && !expanded
+    ? content.slice(0, TRUNCATE_LENGTH).replace(/\s+\S*$/, "") + "..."
+    : content;
+  const sanitized = sanitizeLatex(displayText);
+
+  return (
+    <div>
+      <div className="text-sm font-body text-on-surface prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:rounded prose-code:bg-surface-container prose-code:px-1.5 prose-code:py-0.5 prose-code:before:content-none prose-code:after:content-none">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+          {sanitized}
+        </ReactMarkdown>
+      </div>
+      {needsTruncation && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-1 text-xs text-primary hover:underline"
+        >
+          Show full finding
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function ChatMessage({ message, onViewCell, onOpenNotebook }: ChatMessageProps) {
@@ -84,11 +117,7 @@ export default function ChatMessage({ message, onViewCell, onOpenNotebook }: Cha
                 {message.meta.title}
               </div>
             )}
-            <div className="text-sm font-body text-on-surface prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:rounded prose-code:bg-surface-container prose-code:px-1.5 prose-code:py-0.5 prose-code:before:content-none prose-code:after:content-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
-              </ReactMarkdown>
-            </div>
+            <ChatContent content={message.content} isInvestigation={isInvestigation} />
           </div>
         )}
 
