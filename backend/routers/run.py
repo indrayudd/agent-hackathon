@@ -81,6 +81,15 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             _LOG.warning("Notebook save failed for session %s: %s", session_id, exc)
 
         # Generate story from knowledge graph (if available) or findings
+        def _report_plan(details: list[dict]):
+            """Emit plan_update with report generation progress."""
+            completed_phases = [{"phase": p, "status": "complete"} for p in state.phases_completed]
+            push_event(session_id, {"type": "plan_update", "steps": completed_phases + [
+                {"phase": "Deep Investigation", "status": "complete"},
+                {"phase": "Report Generation", "status": "current", "details": details},
+            ]})
+
+        _report_plan([{"label": "Building sections", "status": "current"}])
         try:
             import datetime
             plot_specs_map = plot_specs_by_cell(session_dir)
@@ -172,6 +181,11 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                 except Exception as plot_exc:
                     _LOG.warning("Plot artifact bridge failed for session %s: %s", session_id, plot_exc)
 
+            _report_plan([
+                {"label": "Building sections", "status": "complete"},
+                {"label": "Extracting plots", "status": "complete"},
+                {"label": "Writing executive summary", "status": "current"},
+            ])
             # LLM narrative for executive summary
             narrative = ""
             try:
@@ -197,6 +211,12 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
                 _LOG.warning("LLM narrative failed: %s", llm_exc)
                 narrative = "\n".join(f"- {c}" for c in conclusions)
 
+            _report_plan([
+                {"label": "Building sections", "status": "complete"},
+                {"label": "Extracting plots", "status": "complete"},
+                {"label": "Writing executive summary", "status": "complete"},
+                {"label": "Curating plots and captions", "status": "current"},
+            ])
             from src.reporting.story_builder import build_curated_story
 
             story_data = build_curated_story(
@@ -208,10 +228,23 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             if kg is not None:
                 story_data["knowledge_graph"] = kg.to_dict()
 
+            _report_plan([
+                {"label": "Building sections", "status": "complete"},
+                {"label": "Extracting plots", "status": "complete"},
+                {"label": "Writing executive summary", "status": "complete"},
+                {"label": "Curating plots and captions", "status": "complete"},
+                {"label": "Saving report", "status": "current"},
+            ])
             from backend.routers.story import atomic_write_json
             atomic_write_json(session_dir / "story.json", story_data)
             _LOG.info("Story written: %d sections, narrative %d chars, kg=%s",
                       len(sections), len(narrative), kg is not None)
+            # Mark report generation complete
+            completed_phases = [{"phase": p, "status": "complete"} for p in state.phases_completed]
+            push_event(session_id, {"type": "plan_update", "steps": completed_phases + [
+                {"phase": "Deep Investigation", "status": "complete"},
+                {"phase": "Report Generation", "status": "complete"},
+            ]})
         except Exception as exc:
             _LOG.exception("Story generation failed: %s", exc)
 

@@ -132,6 +132,7 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
     error,
   } = useStoryStore();
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
+  const planSteps = useNotebookStore((s) => s.planSteps);
   const cells = useNotebookStore((s) => s.cells);
   const setStory = useStoryStore((s) => s.setStory);
   const setLoading = useStoryStore((s) => s.setLoading);
@@ -345,12 +346,36 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
     return () => observer.disconnect();
   }, [sectionData]);
 
+  // Derive report generation status from the execution plan
+  const reportStep = planSteps.find((s) => s.phase === "Report Generation");
+  const reportDone = reportStep?.status === "complete";
+  const reportRunning = reportStep?.status === "current";
+
   if (pipelineRunning) {
+    // Show real plan steps if available, otherwise generic message
+    const stepsToShow = planSteps.filter((s) => s.status !== "skipped");
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 text-on-surface-variant">
         <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
         <p className="text-sm font-body">Agent is analyzing your data...</p>
-        <p className="text-xs text-outline">Story will be generated when analysis completes</p>
+        {stepsToShow.length > 0 ? (
+          <div className="flex flex-col gap-1.5 mt-1 text-xs text-on-surface-variant font-body">
+            {stepsToShow.map((step) => (
+              <div key={step.phase} className="flex items-center gap-2">
+                {step.status === "complete" ? (
+                  <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                ) : step.status === "current" ? (
+                  <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                ) : (
+                  <span className="material-symbols-outlined text-sm text-outline-variant/40">circle</span>
+                )}
+                <span className={step.status === "upcoming" ? "opacity-40" : ""}>{step.phase}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-outline">Story will be generated when analysis completes</p>
+        )}
       </div>
     );
   }
@@ -360,30 +385,26 @@ export default function StoryPane({ sessionId, onOpenNotebookCell }: StoryPanePr
       <div className="flex h-full flex-col items-center justify-center gap-4 text-on-surface-variant">
         {retryCount < 15 ? (
           <>
-            <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-            <p className="text-sm font-body">Generating story report...</p>
-            <div className="flex flex-col gap-1.5 mt-3 text-xs text-on-surface-variant font-body">
-              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 1 ? "opacity-100" : "opacity-30"}`}>
-                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
-                <span>Building sections from knowledge graph</span>
+            {reportDone ? (
+              <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+            ) : (
+              <div className="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+            )}
+            <p className="text-sm font-body">{reportDone ? "Loading story report..." : "Generating story report..."}</p>
+            {reportStep && (
+              <div className="flex flex-col gap-1.5 mt-3 text-xs text-on-surface-variant font-body">
+                {(reportStep.details || []).map((d, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    {d.status === "complete" ? (
+                      <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+                    ) : (
+                      <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                    )}
+                    <span>{d.label}</span>
+                  </div>
+                ))}
               </div>
-              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 3 ? "opacity-100" : "opacity-30"}`}>
-                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
-                <span>Curating plots and generating captions</span>
-              </div>
-              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 5 ? "opacity-100" : "opacity-30"}`}>
-                <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
-                <span>Writing executive summary</span>
-              </div>
-              <div className={`flex items-center gap-2 transition-opacity ${retryCount >= 7 ? "opacity-100" : "opacity-30"}`}>
-                {retryCount >= 9 ? (
-                  <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
-                ) : (
-                  <div className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                )}
-                <span>Finalizing report</span>
-              </div>
-            </div>
+            )}
           </>
         ) : (
           <>
