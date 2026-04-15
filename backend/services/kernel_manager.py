@@ -567,11 +567,20 @@ def execute_code_on_connection(
     cell_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Execute code on a kernel given its connection file (safe for child processes)."""
-    client = jupyter_client.BlockingKernelClient()
-    client.load_connection_file(connection_file)
-    client.start_channels()
     try:
-        client.wait_for_ready(timeout=10)
+        client = jupyter_client.BlockingKernelClient()
+        client.load_connection_file(connection_file)
+        client.start_channels()
+    except Exception as exc:
+        _LOG.warning("Kernel connection failed: %s", exc)
+        return [], f"Kernel connection failed: {exc}"
+    try:
+        try:
+            client.wait_for_ready(timeout=10)
+        except RuntimeError as exc:
+            client.stop_channels()
+            _LOG.warning("Kernel not ready: %s", exc)
+            return [], f"Kernel not ready: {exc}"
         if cell_id:
             code = (
                 f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
