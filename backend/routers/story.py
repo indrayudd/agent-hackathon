@@ -1200,10 +1200,18 @@ async def get_story(session_id: str, format: str = Query("json")):
 @router.post("/story/{session_id}/regenerate")
 async def regenerate_story(session_id: str):
     """Re-read the current notebook and regenerate the story via LLM."""
+    import asyncio
     try:
         session_dir = get_session_dir(session_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Run in thread so the event loop can flush WebSocket plan_update events
+    return await asyncio.to_thread(_regenerate_story_sync, session_id, session_dir)
+
+
+def _regenerate_story_sync(session_id: str, session_dir):
+    """Synchronous story regeneration — runs in a thread."""
 
     # Load existing KG
     from src.agent.knowledge_graph import KnowledgeGraph

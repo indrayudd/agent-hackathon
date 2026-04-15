@@ -37,7 +37,12 @@ function applyOutsideMath(
 function sanitizeLatex(text: string): string {
   let t = text;
 
-  // === Pass 0: Fix GFM strikethrough false positives and corrupted Unicode ===
+  // === Pass 0: Fix markdown/GFM issues and corrupted Unicode ===
+  // Strip dangling ** that break bold spans (common when LLM wraps math in **)
+  // Pattern: ** at start/end of values like "** p= 2.368\ntimes10^{-10}**"
+  // Replace ** adjacent to math/numbers with nothing — the content is better without broken bold
+  t = t.replace(/\*\*\s*(p\s*=|D\s*=|F\s*=|r\s*=|t\s*=)/g, (_m, eq) => eq);
+  t = t.replace(/([\d}$])\s*\*\*/g, (_m, pre) => pre);
   t = applyOutsideMath(t, [
     // "~~1200" triggers GFM ~~strikethrough~~. Escape ~~ when not intentional.
     [/~~(?=\d|[A-Z])/g, "\\~\\~"],

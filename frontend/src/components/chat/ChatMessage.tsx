@@ -106,9 +106,17 @@ export default function ChatMessage({ message, onViewCell, onOpenNotebook }: Cha
                 <div />
               )}
               {typeof message.meta?.confidence === "number" && (
-                <span className="text-[10px] font-medium text-on-surface-variant">
-                  Confidence: {Math.round(message.meta.confidence * 100)}%
-                </span>
+                <div className="flex items-center gap-1 shrink-0" title={`Confidence: ${Math.round(message.meta.confidence * 100)}%`}>
+                  <div className="w-12 h-1.5 rounded-full bg-outline-variant/20 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${Math.round(message.meta.confidence * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[9px] font-medium text-on-surface-variant whitespace-nowrap">
+                    {Math.round(message.meta.confidence * 100)}%
+                  </span>
+                </div>
               )}
             </div>
 
