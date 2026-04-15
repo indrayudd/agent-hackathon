@@ -6,151 +6,111 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
 /**
- * Aggressively fix stray/broken LaTeX in LLM output before KaTeX processes it.
- *
- * Common failure modes:
- * 1. \text{foo} outside $...$ → wrap in math
- * 2. Python eats \t → "text{foo}" (bare, no backslash) → restore and wrap
- * 3. \times outside math → rendered as literal text
- * 4. Bare "times10^{-50}" (backslash eaten) → restore
- * 5. Mismatched/nested $ delimiters → fix pairs
- * 6. \sim, \approx, \chi, \Delta outside math
+ * Apply a set of regex replacements only to non-math segments of text.
+ * Math blocks ($...$, $$...$$) are preserved untouched.
  */
-function sanitizeLatex(text: string): string {
-  // Step 1: Fix broken $ delimiter pairs. KaTeX chokes on odd $ counts.
-  // Remove $ that are clearly broken (e.g., "$_\text{lag}$_rows" → wrap whole thing)
-  // Strategy: split on $$...$$ first (display math), then $...$ (inline math)
-
-  // Step 2: Process non-math segments
+function applyOutsideMath(
+  text: string,
+  replacements: Array<[RegExp, string | ((...args: string[]) => string)]>,
+): string {
   const parts = text.split(/(\$\$[\s\S]*?\$\$|\$(?:[^$\n]|\\\$)+?\$)/g);
   return parts
     .map((part) => {
-      // Already a math block — leave alone
       if (
         (part.startsWith("$$") && part.endsWith("$$")) ||
         (part.startsWith("$") && part.endsWith("$") && part.length > 2)
       ) {
-        return part;
+        return part; // math block — skip
       }
-
       let f = part;
-
-      // --- Restore bare commands where Python ate the backslash ---
-
-      // "text{foo}" → "$\text{foo}$" (Python \t → tab ate the backslash)
-      f = f.replace(
-        /(?<![\\a-zA-Z])text\{([^}]*)\}/g,
-        (_m, inner) => `$\\text{${inner}}$`,
-      );
-      // "textit{foo}" → "$\textit{foo}$"
-      f = f.replace(
-        /(?<![\\a-zA-Z])textit\{([^}]*)\}/g,
-        (_m, inner) => `$\\textit{${inner}}$`,
-      );
-      // "textbf{foo}" → "$\textbf{foo}$"
-      f = f.replace(
-        /(?<![\\a-zA-Z])textbf\{([^}]*)\}/g,
-        (_m, inner) => `$\\textbf{${inner}}$`,
-      );
-      // "mathrm{foo}" → "$\mathrm{foo}$"
-      f = f.replace(
-        /(?<![\\a-zA-Z])mathrm\{([^}]*)\}/g,
-        (_m, inner) => `$\\mathrm{${inner}}$`,
-      );
-      // "mathit{foo}" → "$\mathit{foo}$"
-      f = f.replace(
-        /(?<![\\a-zA-Z])mathit\{([^}]*)\}/g,
-        (_m, inner) => `$\\mathit{${inner}}$`,
-      );
-
-      // --- Properly escaped \command{...} outside $...$ ---
-      f = f.replace(
-        /\\(text|textit|textbf|textrm|texttt|mathrm|mathit|mathbf|bar|hat|tilde|vec|overline|underline|sqrt|frac)\{/g,
-        (_m, cmd) => `$\\${cmd}{`,
-      );
-      // Close the opened math block after the closing }
-      // This is tricky — find matching } and add $
-      // Simpler: just wrap \cmd{...} as a unit
-      f = f.replace(
-        /\$\\(text|textit|textbf|textrm|texttt|mathrm|mathit|mathbf|bar|hat|tilde|vec|overline|underline|sqrt)\{([^}]*)\}(?!\$)/g,
-        (_m, cmd, inner) => `$\\${cmd}{${inner}}$`,
-      );
-
-      // --- Bare "times10^{-N}" or "times 10^{-N}" (backslash eaten) ---
-      f = f.replace(
-        /(?<![\\a-zA-Z])times\s*(\d+)\^?\{([^}]*)\}/g,
-        (_m, base, exp) => `$\\times ${base}^{${exp}}$`,
-      );
-      f = f.replace(
-        /(?<![\\a-zA-Z])times\s*(\d+)\^(-?\d+)/g,
-        (_m, base, exp) => `$\\times ${base}^{${exp}}$`,
-      );
-
-      // --- Bare "sim" before numbers (Python \s → space ate backslash for \sim) ---
-      f = f.replace(
-        /(?<![\\a-zA-Z])sim(\d)/g,
-        (_m, d) => `$\\sim$${d}`,
-      );
-      f = f.replace(
-        /(?<![\\a-zA-Z])simC\(/g,
-        () => `$\\sim$ C(`,
-      );
-
-      // --- Bare "approx" before numbers ---
-      f = f.replace(
-        /(?<![\\a-zA-Z])approx(\d)/g,
-        (_m, d) => `$\\approx$${d}`,
-      );
-
-      // --- Standalone \commands outside math ---
-      f = f.replace(
-        /\\(times|approx|geq|leq|pm|Delta|delta|chi|rho|sigma|mu|alpha|beta|gamma|lambda|infty|neq|sim|propto|cdot|ldots|ge|le|ll|gg|equiv)(?![a-zA-Z{])/g,
-        (_m, cmd) => `$\\${cmd}$`,
-      );
-
-      // --- N^{exp} outside math (common: 10^{-50}) ---
-      f = f.replace(
-        /(\d+)\^?\{(-?[\d.]+)\}/g,
-        (_m, base, exp) => `$${base}^{${exp}}$`,
-      );
-      // N^exp (no braces, like 10^4)
-      f = f.replace(
-        /(\d+)\^(-?\d+)(?![\d}])/g,
-        (_m, base, exp) => `$${base}^{${exp}}$`,
-      );
-
-      // --- Subscripts outside math: word_{sub} ---
-      f = f.replace(
-        /([a-zA-Z])\\_?\{([^}]*)\}/g,
-        (_m, pre, sub) => `${pre}$_{${sub}}$`,
-      );
-
-      // --- "textLevene" style (bare \text that got mangled into one word) ---
-      // Catch: textFoo where Foo starts with uppercase → $\text{Foo}$
-      f = f.replace(
-        /(?<![a-zA-Z])text([A-Z][a-zA-Z_]*)/g,
-        (_m, word) => `$\\text{${word}}$`,
-      );
-
-      // --- Fix leftover bare \frac{}{} ---
-      f = f.replace(
-        /\\frac\{([^}]*)\}\{([^}]*)\}/g,
-        (_m, num, den) => `$\\frac{${num}}{${den}}$`,
-      );
-
-      // --- Clean up double-wrapped math: $$...$$ from our fixes ---
-      f = f.replace(/\$\$([^$]+)\$\$/g, (m, inner) => {
-        // Only unwrap if this looks like inline math we accidentally double-wrapped
-        if (!inner.includes("\n")) return `$${inner}$`;
-        return m;
-      });
-
-      // --- Clean up empty math blocks ---
-      f = f.replace(/\$\s*\$/g, "");
-
+      for (const [re, repl] of replacements) {
+        f = f.replace(re, repl as any);
+      }
       return f;
     })
     .join("");
+}
+
+/**
+ * Aggressively fix stray/broken LaTeX in LLM output before KaTeX processes it.
+ */
+function sanitizeLatex(text: string): string {
+  let t = text;
+
+  // === Pass 1: Compound patterns (must run first, before pieces get wrapped) ===
+  t = applyOutsideMath(t, [
+    // "text{foo}" → "$\text{foo}$" (Python \t ate backslash)
+    [/(?<![\\a-zA-Z])text\{([^}]*)\}/g, (_m: string, inner: string) => `$\\text{${inner}}$`],
+    [/(?<![\\a-zA-Z])textit\{([^}]*)\}/g, (_m: string, inner: string) => `$\\textit{${inner}}$`],
+    [/(?<![\\a-zA-Z])textbf\{([^}]*)\}/g, (_m: string, inner: string) => `$\\textbf{${inner}}$`],
+    [/(?<![\\a-zA-Z])mathrm\{([^}]*)\}/g, (_m: string, inner: string) => `$\\mathrm{${inner}}$`],
+    [/(?<![\\a-zA-Z])mathit\{([^}]*)\}/g, (_m: string, inner: string) => `$\\mathit{${inner}}$`],
+    // \text{foo} outside math (with backslash intact)
+    [/\\(text|textit|textbf|textrm|texttt|mathrm|mathit|mathbf|bar|hat|tilde|vec|overline|underline|sqrt)\{([^}]*)\}/g,
+      (_m: string, cmd: string, inner: string) => `$\\${cmd}{${inner}}$`],
+  ]);
+
+  // === Pass 2: Compound expressions (times10^{exp}, frac, etc.) ===
+  t = applyOutsideMath(t, [
+    // "times10^{-N}" or "times 10^{-N}" (backslash eaten)
+    [/(?<![a-zA-Z])times\s*(\d+)\^\{([^}]*)\}/g,
+      (_m: string, base: string, exp: string) => `$\\times ${base}^{${exp}}$`],
+    [/(?<![a-zA-Z])times\s*(\d+)\^(-?\d+)/g,
+      (_m: string, base: string, exp: string) => `$\\times ${base}^{${exp}}$`],
+    // \frac{a}{b}
+    [/\\frac\{([^}]*)\}\{([^}]*)\}/g,
+      (_m: string, num: string, den: string) => `$\\frac{${num}}{${den}}$`],
+  ]);
+
+  // === Pass 3: Bare run-on commands (textmean, mathrmNaN, etc.) ===
+  t = applyOutsideMath(t, [
+    [/(?<![a-zA-Z])text([a-zA-Z_][a-zA-Z_0-9]*)/g,
+      (_m: string, word: string) => `$\\text{${word.replace(/_/g, "\\_")}}$`],
+    [/(?<![a-zA-Z])mathrm([a-zA-Z_][a-zA-Z_0-9]*)/g,
+      (_m: string, word: string) => `$\\mathrm{${word}}$`],
+    [/(?<![a-zA-Z])mathit([a-zA-Z_][a-zA-Z_0-9]*)/g,
+      (_m: string, word: string) => `$\\mathit{${word}}$`],
+    [/(?<![a-zA-Z])mathbf([a-zA-Z_][a-zA-Z_0-9]*)/g,
+      (_m: string, word: string) => `$\\mathbf{${word}}$`],
+  ]);
+
+  // === Pass 4: Standalone symbols ===
+  t = applyOutsideMath(t, [
+    // \times, \approx etc. with backslash
+    [/\\(times|approx|geq|leq|pm|Delta|delta|chi|rho|sigma|mu|alpha|beta|gamma|lambda|infty|neq|sim|propto|cdot|ldots|ge|le|ll|gg|equiv|eta|theta|phi|psi|omega|epsilon|kappa|tau|pi|zeta|nu|xi)(?![a-zA-Z{])/g,
+      (_m: string, cmd: string) => `$\\${cmd}$`],
+    // Bare Greek letters without backslash (Python ate them)
+    [/(?<![a-zA-Z\\])(eta|rho|chi|sigma|mu|alpha|beta|gamma|delta|lambda|theta|phi|psi|omega|epsilon|kappa|tau|pi|zeta|nu|xi)(?=[\s^_=<>.,;:)\]0-9]|$)/g,
+      (_m: string, cmd: string) => `$\\${cmd}$`],
+    // Bare "sim" and "approx" before numbers
+    [/(?<![a-zA-Z])sim(\d)/g, (_m: string, d: string) => `$\\sim$${d}`],
+    [/(?<![a-zA-Z])simC\(/g, () => `$\\sim$ C(`],
+    [/(?<![a-zA-Z])approx(\d)/g, (_m: string, d: string) => `$\\approx$${d}`],
+  ]);
+
+  // === Pass 5: Exponents and subscripts ===
+  t = applyOutsideMath(t, [
+    // N^{exp}
+    [/(\d+)\^\{(-?[\d.]+)\}/g,
+      (_m: string, base: string, exp: string) => `$${base}^{${exp}}$`],
+    // N^exp
+    [/(\d+)\^(-?\d+)(?![\d}])/g,
+      (_m: string, base: string, exp: string) => `$${base}^{${exp}}$`],
+    // word_{sub}
+    [/([a-zA-Z])\\?_\{([^}]*)\}/g,
+      (_m: string, pre: string, sub: string) => `${pre}$_{${sub}}$`],
+  ]);
+
+  // === Pass 6: Merge adjacent math blocks ===
+  // $\eta$^2 → $\eta^2$
+  t = t.replace(/\$([^$]+)\$\^(\{[^}]+\}|\d+)/g, (_m, inner, exp) => `$${inner}^${exp}$`);
+  // $\text{foo}$_{bar} → $\text{foo}_{bar}$
+  t = t.replace(/\$([^$]+)\$_(\{[^}]+\})/g, (_m, inner, sub) => `$${inner}_${sub}$`);
+
+  // Clean up empty math blocks
+  t = t.replace(/\$\s*\$/g, "");
+
+  return t;
 }
 
 interface StoryMarkdownProps {
@@ -169,5 +129,4 @@ export default function StoryMarkdown({ content, className }: StoryMarkdownProps
   );
 }
 
-// Export for reuse in chat messages
 export { sanitizeLatex };
