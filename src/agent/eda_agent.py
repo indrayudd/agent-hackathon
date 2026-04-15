@@ -22,6 +22,7 @@ def run_agent(
     max_subagents: int = 3,
     max_loops: int = 2,
     loop_timeout: int = 180,
+    seed: int | None = None,
 ):
     """
     Run the EDA agent loop.
@@ -32,7 +33,14 @@ def run_agent(
     :param session_id: session identifier
     :param dataset_path: path to the uploaded dataset file
     :param push_event: callback to push streaming events to the frontend
+    :param seed: optional random seed for reproducibility
     """
+    if seed is not None:
+        import random
+        import numpy as np
+        random.seed(seed)
+        np.random.seed(seed)
+
     from backend.services.kernel_manager import execute_code, shutdown_kernel
 
     state = AgentState(dataset_path=dataset_path, session_id=session_id)

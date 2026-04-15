@@ -24,6 +24,7 @@ class RunConfig(BaseModel):
     max_subagents: int = 3
     max_loops: int = 2
     loop_timeout: int = 300
+    seed: int | None = None
 
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ _running: dict[str, threading.Thread] = {}
 
 
 def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path,
-                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 300):
+                         max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 300,
+                         seed: int | None = None):
     """Run the EDA agent loop in a background thread, streaming all events."""
     try:
         (session_dir / "status.json").write_text(
@@ -48,6 +50,7 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             max_subagents=max_subagents,
             max_loops=max_loops,
             loop_timeout=loop_timeout,
+            seed=seed,
         )
 
         # Save state summary
@@ -325,6 +328,7 @@ async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
             "max_subagents": config.max_subagents,
             "max_loops": config.max_loops,
             "loop_timeout": config.loop_timeout,
+            "seed": config.seed,
         },
         daemon=True,
     )

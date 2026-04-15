@@ -73,7 +73,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
 export async function runEda(
   sessionId: string,
-  config?: { max_subagents?: number; max_loops?: number; loop_timeout?: number },
+  config?: { max_subagents?: number; max_loops?: number; loop_timeout?: number; seed?: number },
 ): Promise<RunResponse> {
   const res = await fetch(`${API_BASE}/run/${sessionId}`, {
     method: "POST",

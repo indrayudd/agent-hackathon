@@ -2,10 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for numpy, scipy, matplotlib
+# System deps for numpy, scipy, matplotlib, weasyprint
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gfortran libopenblas-dev curl \
     libgraphite2-3 libharfbuzz0b libicu-dev libfontconfig1 libfreetype6 \
+    libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libcairo2 libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Tectonic for PDF export (single binary LaTeX compiler)

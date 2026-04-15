@@ -28,6 +28,7 @@ export default function DropZone() {
   const [error, setError] = useState<string | null>(null);
   const [maxSubagents, setMaxSubagents] = useState(3);
   const [maxLoops, setMaxLoops] = useState(2);
+  const [seedInput, setSeedInput] = useState("");
 
   const onDrop = useCallback((accepted: File[]) => {
     setError(null);
@@ -46,7 +47,12 @@ export default function DropZone() {
     setError(null);
     try {
       const data = await uploadFile(file);
-      runEda(data.session_id, { max_subagents: maxSubagents, max_loops: maxLoops }).catch(() => {});
+      const parsedSeed = seedInput.trim() !== "" ? Number(seedInput.trim()) : null;
+      runEda(data.session_id, {
+        max_subagents: maxSubagents,
+        max_loops: maxLoops,
+        seed: parsedSeed != null && Number.isFinite(parsedSeed) ? parsedSeed : undefined,
+      }).catch(() => {});
       router.push(`/session/${data.session_id}`);
     } catch (err: any) {
       setError(err.message ?? "Upload failed");
@@ -108,6 +114,17 @@ export default function DropZone() {
                 <option value={2}>Standard</option>
                 <option value={5}>Deep</option>
               </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-on-surface-variant font-body">
+              Seed (optional)
+              <input
+                type="text"
+                inputMode="numeric"
+                value={seedInput}
+                onChange={(e) => setSeedInput(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Leave blank for random"
+                className="px-3 py-1.5 rounded border border-outline-variant bg-surface text-on-surface font-body w-44"
+              />
             </label>
           </div>
         </div>

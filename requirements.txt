@@ -45,6 +45,9 @@ nbformat>=5.9
 nbclient>=0.8
 ipykernel>=6.29
 
+# PDF export fallback (when tectonic unavailable)
+weasyprint>=60.0
+
 # Backend server
 fastapi>=0.115
 uvicorn[standard]>=0.30
