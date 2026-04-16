@@ -463,67 +463,7 @@ def execute_code(
         error: error string if execution failed, None otherwise
     """
     client = get_or_create_kernel(session_id)
-    if cell_id:
-        code = (
-            f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
-            "__agenticeda_plot_spec_emitted = 0\n"
-            "__agenticeda_plot_spec_has_source = False\n"
-            f"{code}\n"
-            "_agenticeda_emit_fallback_plot_specs()\n"
-        )
-    msg_id = client.execute(code)
-
-    outputs: list[dict[str, Any]] = []
-    error: str | None = None
-
-    while True:
-        try:
-            msg = client.get_iopub_msg(timeout=timeout)
-        except queue.Empty:
-            error = f"Execution timed out after {timeout}s"
-            break
-
-        # Only process messages from our execution
-        if msg["parent_header"].get("msg_id") != msg_id:
-            continue
-
-        msg_type = msg["msg_type"]
-        content = msg["content"]
-
-        if msg_type == "stream":
-            outputs.append({
-                "output_type": "stream",
-                "name": content.get("name", "stdout"),
-                "text": content.get("text", ""),
-            })
-
-        elif msg_type in ("execute_result", "display_data"):
-            data = content.get("data", {})
-            # Convert list values to strings
-            clean_data = {}
-            for k, v in data.items():
-                clean_data[k] = v if isinstance(v, str) else "".join(v) if isinstance(v, list) else str(v)
-            outputs.append({
-                "output_type": msg_type,
-                "data": clean_data,
-                "metadata": content.get("metadata", {}),
-            })
-
-        elif msg_type == "error":
-            tb = content.get("traceback", [])
-            error = f"{content.get('ename', 'Error')}: {content.get('evalue', '')}"
-            outputs.append({
-                "output_type": "error",
-                "ename": content.get("ename", ""),
-                "evalue": content.get("evalue", ""),
-                "traceback": tb,
-            })
-
-        elif msg_type == "status":
-            if content["execution_state"] == "idle":
-                break
-
-    return outputs, error
+    return _execute_on_client(client, code, timeout=timeout, cell_id=cell_id)
 
 
 def shutdown_kernel(session_id: str):
@@ -566,7 +506,12 @@ def execute_code_on_connection(
     timeout: int = 60,
     cell_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Execute code on a kernel given its connection file (safe for child processes)."""
+    """Execute code on a kernel given its connection file (safe for child processes).
+
+    NOTE: Creates a new BlockingKernelClient per call. For repeated calls in
+    subagent loops, prefer PersistentKernelConnection to avoid the ZMQ
+    slow-joiner problem (iopub messages lost before subscription establishes).
+    """
     try:
         client = jupyter_client.BlockingKernelClient()
         client.load_connection_file(connection_file)
@@ -581,41 +526,89 @@ def execute_code_on_connection(
             client.stop_channels()
             _LOG.warning("Kernel not ready: %s", exc)
             return [], f"Kernel not ready: {exc}"
-        if cell_id:
-            code = (
-                f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
-                "__agenticeda_plot_spec_emitted = 0\n"
-                "__agenticeda_plot_spec_has_source = False\n"
-                f"{code}\n"
-                "_agenticeda_emit_fallback_plot_specs()\n"
-            )
-        msg_id = client.execute(code)
-        outputs: list[dict[str, Any]] = []
-        error: str | None = None
-        while True:
-            try:
-                msg = client.get_iopub_msg(timeout=timeout)
-            except queue.Empty:
-                error = f"Execution timed out after {timeout}s"
-                break
-            if msg["parent_header"].get("msg_id") != msg_id:
-                continue
-            msg_type = msg["msg_type"]
-            content = msg["content"]
-            if msg_type == "stream":
-                outputs.append({"output_type": "stream", "name": content.get("name", "stdout"), "text": content.get("text", "")})
-            elif msg_type in ("execute_result", "display_data"):
-                data = content.get("data", {})
-                clean_data = {}
-                for k, v in data.items():
-                    clean_data[k] = v if isinstance(v, str) else "".join(v) if isinstance(v, list) else str(v)
-                outputs.append({"output_type": msg_type, "data": clean_data, "metadata": content.get("metadata", {})})
-            elif msg_type == "error":
-                error = f"{content.get('ename', 'Error')}: {content.get('evalue', '')}"
-                outputs.append({"output_type": "error", "ename": content.get("ename", ""), "evalue": content.get("evalue", ""), "traceback": content.get("traceback", [])})
-            elif msg_type == "status":
-                if content["execution_state"] == "idle":
-                    break
-        return outputs, error
+        return _execute_on_client(client, code, timeout=timeout, cell_id=cell_id)
     finally:
         client.stop_channels()
+
+
+def _execute_on_client(
+    client: jupyter_client.BlockingKernelClient,
+    code: str,
+    timeout: int = 60,
+    cell_id: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Core execution logic on an already-connected client."""
+    if cell_id:
+        code = (
+            f'__agenticeda_cell_id = {json.dumps(cell_id)}\n'
+            "__agenticeda_plot_spec_emitted = 0\n"
+            "__agenticeda_plot_spec_has_source = False\n"
+            f"{code}\n"
+            "_agenticeda_emit_fallback_plot_specs()\n"
+        )
+    # Flush stale iopub messages before executing
+    while True:
+        try:
+            client.get_iopub_msg(timeout=0.05)
+        except queue.Empty:
+            break
+    msg_id = client.execute(code)
+    outputs: list[dict[str, Any]] = []
+    error: str | None = None
+    while True:
+        try:
+            msg = client.get_iopub_msg(timeout=timeout)
+        except queue.Empty:
+            error = f"Execution timed out after {timeout}s"
+            break
+        if msg["parent_header"].get("msg_id") != msg_id:
+            continue
+        msg_type = msg["msg_type"]
+        content = msg["content"]
+        if msg_type == "stream":
+            outputs.append({"output_type": "stream", "name": content.get("name", "stdout"), "text": content.get("text", "")})
+        elif msg_type in ("execute_result", "display_data"):
+            data = content.get("data", {})
+            clean_data = {}
+            for k, v in data.items():
+                clean_data[k] = v if isinstance(v, str) else "".join(v) if isinstance(v, list) else str(v)
+            outputs.append({"output_type": msg_type, "data": clean_data, "metadata": content.get("metadata", {})})
+        elif msg_type == "error":
+            error = f"{content.get('ename', 'Error')}: {content.get('evalue', '')}"
+            outputs.append({"output_type": "error", "ename": content.get("ename", ""), "evalue": content.get("evalue", ""), "traceback": content.get("traceback", [])})
+        elif msg_type == "status":
+            if content["execution_state"] == "idle":
+                break
+    return outputs, error
+
+
+class PersistentKernelConnection:
+    """Reusable kernel connection for subagent processes.
+
+    Avoids the ZMQ slow-joiner problem by creating the BlockingKernelClient
+    once and reusing it across multiple execute() calls, keeping the iopub
+    subscription alive throughout the subagent's lifetime.
+    """
+
+    def __init__(self, connection_file: str):
+        self._client = jupyter_client.BlockingKernelClient()
+        self._client.load_connection_file(connection_file)
+        self._client.start_channels()
+        self._client.wait_for_ready(timeout=15)
+        # Flush any stale iopub messages from kernel startup
+        while True:
+            try:
+                self._client.get_iopub_msg(timeout=0.2)
+            except queue.Empty:
+                break
+
+    def execute(
+        self, code: str, timeout: int = 60, cell_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        return _execute_on_client(self._client, code, timeout=timeout, cell_id=cell_id)
+
+    def close(self):
+        try:
+            self._client.stop_channels()
+        except Exception:
+            pass

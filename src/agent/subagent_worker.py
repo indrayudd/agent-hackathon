@@ -32,7 +32,7 @@ def subagent_process_worker(
     Connects to the kernel via connection_file, runs the subagent,
     sends events via event_queue, puts the InvestigationResult dict on result_queue.
     """
-    from backend.services.kernel_manager import execute_code_on_connection
+    from backend.services.kernel_manager import PersistentKernelConnection
     from src.agent.subagent import run_subagent
 
     cell_counter = [cell_counter_start]
@@ -40,10 +40,14 @@ def subagent_process_worker(
     def push_event_via_queue(sid: str, event: dict) -> None:
         event_queue.put(event)
 
+    # Create a persistent connection once — avoids ZMQ slow-joiner problem
+    # where iopub messages are lost when creating a new client per cell.
+    conn = PersistentKernelConnection(connection_file)
+
     def execute_code_via_connection(
         sid: str, code: str, timeout: int = 60, cell_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        return execute_code_on_connection(connection_file, code, timeout=timeout, cell_id=cell_id)
+        return conn.execute(code, timeout=timeout, cell_id=cell_id)
 
     try:
         result = run_subagent(
@@ -89,3 +93,7 @@ def subagent_process_worker(
     finally:
         # Signal no more events from this worker
         event_queue.put(None)
+        try:
+            conn.close()
+        except Exception:
+            pass
