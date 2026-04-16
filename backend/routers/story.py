@@ -676,6 +676,100 @@ def _escape_html(text: str) -> str:
     )
 
 
+import re as _re
+
+# LaTeX command → Unicode mappings for PDF export
+_LATEX_UNICODE = {
+    "\\times": "×", "\\approx": "≈", "\\geq": "≥", "\\leq": "≤",
+    "\\pm": "±", "\\neq": "≠", "\\sim": "∼", "\\propto": "∝",
+    "\\infty": "∞", "\\cdot": "·", "\\ldots": "…", "\\equiv": "≡",
+    "\\Delta": "Δ", "\\Sigma": "Σ", "\\Omega": "Ω", "\\Gamma": "Γ",
+    "\\Lambda": "Λ", "\\Pi": "Π",
+    "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
+    "\\epsilon": "ε", "\\eta": "η", "\\theta": "θ", "\\lambda": "λ",
+    "\\mu": "μ", "\\nu": "ν", "\\xi": "ξ", "\\pi": "π", "\\rho": "ρ",
+    "\\sigma": "σ", "\\tau": "τ", "\\phi": "φ", "\\chi": "χ",
+    "\\psi": "ψ", "\\omega": "ω", "\\kappa": "κ", "\\zeta": "ζ",
+    "\\ll": "≪", "\\gg": "≫", "\\ge": "≥", "\\le": "≤",
+}
+
+# Bare commands (backslash eaten by Python)
+_BARE_COMMANDS = {
+    "Delta": "Δ", "Sigma": "Σ", "Omega": "Ω", "Gamma": "Γ", "Lambda": "Λ",
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε",
+    "eta": "η", "theta": "θ", "lambda": "λ", "mu": "μ", "rho": "ρ",
+    "sigma": "σ", "chi": "χ", "phi": "φ", "psi": "ψ", "omega": "ω",
+    "times": "×", "approx": "≈", "infty": "∞", "neq": "≠", "sim": "∼",
+    "propto": "∝", "equiv": "≡",
+}
+
+
+def _latex_math_to_html(math_content: str) -> str:
+    """Convert a LaTeX math expression to HTML with Unicode symbols."""
+    s = math_content
+    # \text{...} → plain text
+    s = _re.sub(r"\\text\{([^}]*)\}", r"\1", s)
+    s = _re.sub(r"\\textbf\{([^}]*)\}", r"<b>\1</b>", s)
+    s = _re.sub(r"\\textit\{([^}]*)\}", r"<i>\1</i>", s)
+    s = _re.sub(r"\\mathrm\{([^}]*)\}", r"\1", s)
+    # Bare text commands (backslash eaten): textFoo → Foo
+    s = _re.sub(r"(?<![a-zA-Z\\])text([A-Z][a-zA-Z_]*)", r"\1", s)
+    s = _re.sub(r"(?<![a-zA-Z\\])text\{([^}]*)\}", r"\1", s)
+    # \frac{a}{b} → a/b
+    s = _re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
+    # Replace backslash commands with Unicode
+    for cmd, uni in _LATEX_UNICODE.items():
+        s = s.replace(cmd, uni)
+    # Replace bare commands (Python ate backslash) — more aggressive inside math
+    # Uppercase Greek: DeltaP → ΔP, SigmaX → ΣX
+    for cmd in ("Delta", "Sigma", "Omega", "Gamma", "Lambda", "Pi"):
+        if cmd in _BARE_COMMANDS:
+            s = _re.sub(rf"(?<![a-zA-Z\\]){cmd}", _BARE_COMMANDS[cmd], s)
+    # Lowercase Greek and operators
+    for cmd, uni in _BARE_COMMANDS.items():
+        if cmd[0].isupper():
+            continue  # already handled above
+        s = _re.sub(rf"(?<![a-zA-Z\\]){cmd}(?=[^a-z]|$)", uni, s)
+    # x^{exp} → x<sup>exp</sup>
+    s = _re.sub(r"\^\{([^}]*)\}", r"<sup>\1</sup>", s)
+    s = _re.sub(r"\^(-?\d+)", r"<sup>\1</sup>", s)
+    # x_{sub} → x<sub>sub</sub>
+    s = _re.sub(r"_\{([^}]*)\}", r"<sub>\1</sub>", s)
+    # Single-char subscript, but NOT underscores in variable names like Power_Curve
+    s = _re.sub(r"(?<=[a-zA-Z])_(?=[a-zA-Z]{2,})", "_", s)  # keep word_word underscores
+    s = _re.sub(r"_([a-zA-Z0-9])(?![a-zA-Z])", r"<sub>\1</sub>", s)  # only single-char subscripts
+    # Clean up remaining backslashes and braces
+    s = s.replace("\\", "").replace("{", "").replace("}", "")
+    return s
+
+
+def _render_math_in_text(text: str) -> str:
+    """Convert LaTeX $...$ and $$...$$ in text to HTML with Unicode math."""
+    # Fix double-escaped backslashes: \\text → \text, \\rho → \rho, etc.
+    text = _re.sub(
+        r"\\\\(text|textit|textbf|textrm|texttt|mathrm|mathit|mathbf|frac|sqrt|"
+        r"bar|hat|tilde|vec|overline|underline|times|approx|g?eq|leq|pm|"
+        r"Delta|Sigma|Omega|Gamma|Lambda|Pi|"
+        r"delta|sigma|omega|gamma|lambda|alpha|beta|eta|rho|chi|mu|theta|phi|psi|"
+        r"epsilon|kappa|tau|pi|zeta|nu|xi|"
+        r"infty|neq|sim|propto|cdot|ldots|ll|gg|equiv|[,;!>]|quad|qquad"
+        r")(?![a-zA-Z])",
+        r"\\\1", text,
+    )
+    # $$...$$ display math
+    text = _re.sub(r"\$\$([\s\S]*?)\$\$", lambda m: _latex_math_to_html(m.group(1)), text)
+    # $...$ inline math
+    text = _re.sub(r"\$([^$\n]+?)\$", lambda m: _latex_math_to_html(m.group(1)), text)
+    # Fix bare commands outside math (Python ate backslash)
+    for cmd, uni in _BARE_COMMANDS.items():
+        text = _re.sub(rf"(?<![a-zA-Z\\]){cmd}(?=[^a-z]|$)", uni, text)
+    # Handle bare exponents/subscripts outside math: 10^{-8} → 10<sup>-8</sup>
+    text = _re.sub(r"\^\{([^}]*)\}", r"<sup>\1</sup>", text)
+    text = _re.sub(r"\^(-?\d+)", r"<sup>\1</sup>", text)
+    text = _re.sub(r"_\{([^}]*)\}", r"<sub>\1</sub>", text)
+    return text
+
+
 def _roman(n: int) -> str:
     """Convert integer to Roman numeral."""
     vals = [(1000,'M'),(900,'CM'),(500,'D'),(400,'CD'),(100,'C'),(90,'XC'),
@@ -708,11 +802,11 @@ def _story_to_ieee_html_legacy(story_data: dict) -> str:
             if not para:
                 continue
             if para.startswith("- "):
-                content_html += f"<li>{_escape_html(para[2:])}</li>\n"
+                content_html += f"<li>{_render_math_in_text(_escape_html(para[2:]))}</li>\n"
             elif para.startswith("**") and para.endswith("**"):
-                content_html += f"<p><strong>{_escape_html(para[2:-2])}</strong></p>\n"
+                content_html += f"<p><strong>{_render_math_in_text(_escape_html(para[2:-2]))}</strong></p>\n"
             else:
-                content_html += f"<p>{_escape_html(para)}</p>\n"
+                content_html += f"<p>{_render_math_in_text(_escape_html(para))}</p>\n"
 
         # Add plots as figures
         plots_html = ""
@@ -868,7 +962,7 @@ em {{ font-style: italic; }}
 
 <div class="abstract">
     <h3>Abstract</h3>
-    <p>{_escape_html(summary[:2000])}</p>
+    <p>{_render_math_in_text(_escape_html(summary[:2000]))}</p>
 </div>
 
 {sections_html}

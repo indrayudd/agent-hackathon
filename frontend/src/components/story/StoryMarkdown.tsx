@@ -32,10 +32,44 @@ function applyOutsideMath(
 }
 
 /**
+ * Apply regex replacements only to math segments ($...$, $$...$$).
+ * Inverse of applyOutsideMath — fixes broken commands INSIDE math blocks.
+ */
+function applyInsideMath(
+  text: string,
+  replacements: Array<[RegExp, string | ((...args: string[]) => string)]>,
+): string {
+  const parts = text.split(/(\$\$[\s\S]*?\$\$|\$(?:[^$\n]|\\\$)+?\$)/g);
+  return parts
+    .map((part) => {
+      const isMath =
+        (part.startsWith("$$") && part.endsWith("$$")) ||
+        (part.startsWith("$") && part.endsWith("$") && part.length > 2);
+      if (!isMath) return part; // non-math — skip
+      let f = part;
+      for (const [re, repl] of replacements) {
+        f = f.replace(re, repl as any);
+      }
+      return f;
+    })
+    .join("");
+}
+
+/**
  * Aggressively fix stray/broken LaTeX in LLM output before KaTeX processes it.
  */
 function sanitizeLatex(text: string): string {
   let t = text;
+
+  // === Pass -1: Un-double-escape backslashes ===
+  // Some content arrives with \\text instead of \text (backend double-escaping).
+  // In the browser string, this looks like two real backslashes before a command.
+  // KaTeX interprets \\ as line-break, so \\text renders as linebreak + italic "text".
+  // Fix: collapse \\ → \ before known LaTeX command names and spacing commands.
+  t = t.replace(
+    /\\\\(text(?:it|bf|rm|tt)?|math(?:rm|it|bf)|frac|sqrt|bar|hat|tilde|vec|overline|underline|times|approx|g?eq|leq|pm|Delta|Sigma|Omega|Gamma|Lambda|Pi|delta|sigma|omega|gamma|lambda|alpha|beta|eta|rho|chi|mu|theta|phi|psi|epsilon|kappa|tau|pi|zeta|nu|xi|infty|neq|sim|propto|cdot|ldots|ll|gg|equiv|[,;!>]|quad|qquad|hspace|vspace|left|right|big|Big|bigg|Bigg)(?![a-zA-Z])/g,
+    "\\$1",
+  );
 
   // === Pass 0: Fix markdown/GFM issues and corrupted Unicode ===
   // Fix unpaired ** bold markers. When content is split into paragraphs,
@@ -124,6 +158,42 @@ function sanitizeLatex(text: string): string {
     // word_{sub}
     [/([a-zA-Z])\\?_\{([^}]*)\}/g,
       (_m: string, pre: string, sub: string) => `${pre}$_{${sub}}$`],
+  ]);
+
+  // === Pass 5b: Fix bare commands INSIDE math blocks ===
+  // When LLM wraps content in $...$ but Python ate the backslash,
+  // e.g. $DeltaP = textLV ActivePower(kW)$ → $\Delta P = \text{LV ActivePower(kW)}$
+  t = applyInsideMath(t, [
+    // Bare text/mathrm commands with braces: text{foo} → \text{foo}
+    [/(?<!\\)text\{/g, "\\text{"],
+    [/(?<!\\)textit\{/g, "\\textit{"],
+    [/(?<!\\)textbf\{/g, "\\textbf{"],
+    [/(?<!\\)mathrm\{/g, "\\mathrm{"],
+    [/(?<!\\)mathit\{/g, "\\mathit{"],
+    [/(?<!\\)mathbf\{/g, "\\mathbf{"],
+    // Bare text run-on: textFoo or textMean(...) → \text{Foo} or \text{Mean}(...)
+    [/(?<!\\)text([A-Z][a-zA-Z_]*)/g, (_m: string, word: string) => `\\text{${word}}`],
+    // Bare times before digit: times10 → \times 10
+    [/(?<!\\)times(\d)/g, (_m: string, d: string) => `\\times ${d}`],
+    [/(?<!\\)times\s+(\d)/g, (_m: string, d: string) => `\\times ${d}`],
+    // Bare Greek/math symbols without backslash
+    [/(?<![a-zA-Z\\])(Delta|Sigma|Omega|Gamma|Lambda|Pi)(?=[^a-z]|$)/g,
+      (_m: string, cmd: string) => `\\${cmd}`],
+    [/(?<![a-zA-Z\\])(delta|sigma|omega|gamma|lambda|alpha|beta|eta|rho|chi|mu|theta|phi|psi|epsilon|kappa|tau|pi|zeta|nu|xi)(?=[^a-z]|$)/g,
+      (_m: string, cmd: string) => `\\${cmd}`],
+    // Bare times/approx/sim etc.
+    [/(?<![a-zA-Z\\])(times|approx|geq|leq|pm|infty|neq|sim|propto|cdot|ldots|equiv)(?=[^a-z]|$)/g,
+      (_m: string, cmd: string) => `\\${cmd}`],
+    // Corrupted Unicode inside math: Ö0d7 → \times, ö3b8 → \theta, etc.
+    [/[Öö]0d7/g, "\\times"],
+    [/[Öö]3b8/g, "\\theta"],
+    [/[Öö]3b7/g, "\\eta"],
+    [/[Öö]3b1/g, "\\alpha"],
+    [/[Öö]3b2/g, "\\beta"],
+    [/[Öö]3b3/g, "\\gamma"],
+    [/[Öö]3c3/g, "\\sigma"],
+    [/[Öö]3c7/g, "\\chi"],
+    [/[Öö]3bc/g, "\\mu"],
   ]);
 
   // === Pass 6: Merge adjacent math blocks ===
