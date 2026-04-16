@@ -23,6 +23,16 @@ SecretStr = pydantic.SecretStr
 
 dotenv.load_dotenv()
 
+# Module-level LLM seed for reproducible generations (OpenAI only).
+_llm_seed: int | None = None
+
+
+def set_llm_seed(seed: int | None) -> None:
+    """Set the LLM seed and clear cached model instances so new ones pick it up."""
+    global _llm_seed
+    _llm_seed = seed
+    get_chat_model.cache_clear()
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -110,6 +120,9 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
     model_name = settings.model if model is None else model
     retries = max_retries if max_retries is not None else settings.max_retries
     provider = settings.provider
+    extra_kwargs: dict = {}
+    if _llm_seed is not None and provider in ("openai", "openai_compatible", "azure_openai_v1"):
+        extra_kwargs["seed"] = _llm_seed
     if provider == "openai":
         _need("OPENAI_API_KEY")
         chat_model = ChatOpenAI(
@@ -117,6 +130,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
+            model_kwargs=extra_kwargs or None,
         )
     elif provider == "openai_compatible":
         base_url = _need("OPENAI_COMPAT_BASE_URL")
@@ -128,6 +142,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
+            model_kwargs=extra_kwargs or None,
         )
     elif provider == "azure_openai_v1":
         azure_base = _need("AZURE_OPENAI_BASE_URL")
@@ -139,6 +154,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
+            model_kwargs=extra_kwargs or None,
         )
     elif provider == "anthropic":
         _need("ANTHROPIC_API_KEY")

@@ -40,6 +40,8 @@ def run_agent(
         import numpy as np
         random.seed(seed)
         np.random.seed(seed)
+        from src.config.config import set_llm_seed
+        set_llm_seed(seed)
 
     from backend.services.kernel_manager import execute_code, shutdown_kernel
 
@@ -903,6 +905,13 @@ def run_agent(
                 p.terminate()
                 p.join(timeout=5)
 
+            def _mark_hyp_done(title: str, detail_status: str = "complete"):
+                for d in _investigation_details:
+                    if d["label"] == title:
+                        d["status"] = detail_status
+                        break
+                _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
+
             if status == "ok":
                 # Load images from temp file (avoids pipe deadlock)
                 images = {}
@@ -929,12 +938,6 @@ def run_agent(
                     cell_sources=data.get("cell_sources", {}),
                     cell_outputs=data.get("cell_outputs", {}),
                 )
-                def _mark_hyp_done(title: str, detail_status: str = "complete"):
-                    for d in _investigation_details:
-                        if d["label"] == title:
-                            d["status"] = detail_status
-                            break
-                    _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
 
                 if getattr(result, "status", "complete") == "complete":
                     results.append(result)
