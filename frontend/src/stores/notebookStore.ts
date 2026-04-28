@@ -3,6 +3,7 @@ import type { Cell } from "@/lib/types";
 import { v4 as uuidv4 } from "uuid";
 
 export type AgentActivity = "idle" | "thinking" | "generating" | "executing" | "fixing" | "backtracking" | "complete" | "failed";
+export type WorkspaceTab = "notebook" | "story" | "history" | "about";
 
 export interface PlanStepDetail {
   label: string;
@@ -69,8 +70,8 @@ interface NotebookState {
   setPlanSteps: (steps: PlanStep[]) => void;
   clearActivityLog: () => void;
   resetForNewSession: () => void;
-  activeTab: "notebook" | "story" | "history";
-  setActiveTab: (tab: "notebook" | "story" | "history") => void;
+  activeTab: WorkspaceTab;
+  setActiveTab: (tab: WorkspaceTab) => void;
   notebooks: Record<string, NotebookData>;
   activeNotebookId: string;
   ensureNotebook: (id: string, title: string) => void;
@@ -294,11 +295,11 @@ export const useNotebookStore = create<NotebookState>((set) => ({
       planSteps: [],
       hypothesisGroups: [],
       fixedCellIds: new Set<string>(),
-      activeTab: "notebook" as "notebook" | "story" | "history",
+      activeTab: "notebook" as WorkspaceTab,
       notebooks: { main: { id: "main", title: "Main", cells: [], status: "idle" as const } },
       activeNotebookId: "main",
     }),
-  activeTab: "notebook" as "notebook" | "story" | "history",
+  activeTab: "notebook" as WorkspaceTab,
   setActiveTab: (activeTab) => set({ activeTab }),
   notebooks: { main: { id: "main", title: "Main", cells: [], status: "idle" as const } },
   activeNotebookId: "main",

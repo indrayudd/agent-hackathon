@@ -73,13 +73,44 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
 export async function runEda(
   sessionId: string,
-  config?: { max_subagents?: number; max_loops?: number; loop_timeout?: number; seed?: number },
+  config?: {
+    max_subagents?: number;
+    max_loops?: number;
+    loop_timeout?: number;
+    seed?: number;
+    research_direction?: string;
+  },
 ): Promise<RunResponse> {
   const res = await fetch(`${API_BASE}/run/${sessionId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config || {}),
   });
+  return res.json();
+}
+
+export interface SteeringResponse {
+  id: string;
+  session_id: string;
+  content: string;
+  created_at: string;
+  status: "queued" | "read";
+  read_at?: string | null;
+}
+
+export async function sendSteering(
+  sessionId: string,
+  content: string,
+  messageId: string,
+): Promise<SteeringResponse> {
+  const res = await fetch(`${API_BASE}/run/${sessionId}/steering`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, message_id: messageId }),
+  });
+  if (!res.ok) {
+    throw new Error(`Steering failed: ${await readError(res)}`);
+  }
   return res.json();
 }
 

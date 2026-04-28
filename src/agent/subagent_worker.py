@@ -25,6 +25,7 @@ def subagent_process_worker(
     notebook_id: str,
     kg_context: str,
     result_queue: mp.Queue,
+    run_guidance: str = "",
     deadline: float = 0,
 ) -> None:
     """Top-level function that runs in a child process.
@@ -64,6 +65,7 @@ def subagent_process_worker(
             max_cells=max_cells,
             notebook_id=notebook_id,
             kg_context=kg_context,
+            run_guidance=run_guidance,
             deadline=deadline,
         )
         # Convert to dict for pickling across process boundary.

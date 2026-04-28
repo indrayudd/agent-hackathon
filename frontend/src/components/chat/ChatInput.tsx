@@ -12,15 +12,13 @@ export default function ChatInput({ onSend }: ChatInputProps) {
   const [value, setValue] = useState("");
   const isTyping = useChatStore((s) => s.isTyping);
   const pipelineRunning = useNotebookStore((s) => s.pipelineRunning);
-  const addUserMessage = useChatStore((s) => s.addUserMessage);
 
   const submit = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || isTyping) return;
-    addUserMessage(trimmed);
     onSend(trimmed);
     setValue("");
-  }, [value, isTyping, addUserMessage, onSend]);
+  }, [value, isTyping, onSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -35,7 +33,7 @@ export default function ChatInput({ onSend }: ChatInputProps) {
         <textarea
           className="w-full bg-surface-container-low border border-outline-variant/20 rounded-xl p-3 pr-10 text-xs focus:ring-2 focus:ring-primary focus:border-transparent resize-none font-body text-on-surface placeholder:text-on-surface-variant/50 outline-none"
           rows={2}
-          placeholder={pipelineRunning ? "Agent is running EDA..." : "Ask about your data..."}
+          placeholder={pipelineRunning ? "Steer the current run..." : "Ask about your data..."}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}

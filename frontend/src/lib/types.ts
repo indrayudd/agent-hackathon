@@ -133,11 +133,11 @@ export interface ChatMessage {
   type: "text" | "cell_ref" | "action";
   cell_id?: string;
   meta?: {
-    kind?: "investigation" | "action" | "info";
+    kind?: "investigation" | "action" | "info" | "steering";
     notebook_id?: string;
     hypothesis_id?: string;
     title?: string;
-    status?: "started" | "running" | "complete" | "failed" | "timeout";
+    status?: "started" | "running" | "complete" | "failed" | "timeout" | "queued" | "read";
     confidence?: number;
   };
   timestamp: string;

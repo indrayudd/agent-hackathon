@@ -59,7 +59,9 @@ export default function ChatMessage({ message, onViewCell, onOpenNotebook }: Cha
   const isUser = message.role === "user";
   const isAction = message.type === "action";
   const isInvestigation = message.meta?.kind === "investigation";
+  const isSteering = message.meta?.kind === "steering";
   const badge = isInvestigation ? statusBadge(message.meta?.status) : null;
+  const steeringStatus = message.meta?.status === "read" ? "Read" : message.meta?.status === "failed" ? "Failed" : "Queued";
 
   return (
     <div className={`flex items-start gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -149,9 +151,23 @@ export default function ChatMessage({ message, onViewCell, onOpenNotebook }: Cha
           </button>
         )}
 
-        <p className={`text-[10px] mt-1 ${isUser ? "text-white/60" : "text-on-surface-variant"}`}>
-          {new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-        </p>
+        <div className={`mt-1 flex items-center gap-2 text-[10px] ${isUser ? "justify-end text-white/60" : "text-on-surface-variant"}`}>
+          <span>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+          {isUser && isSteering && (
+            <span className="inline-flex items-center gap-1">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  message.meta?.status === "read"
+                    ? "bg-emerald-200"
+                    : message.meta?.status === "failed"
+                    ? "bg-red-200"
+                    : "bg-white/60 animate-pulse"
+                }`}
+              />
+              {steeringStatus}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

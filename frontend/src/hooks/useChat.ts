@@ -3,11 +3,30 @@ import { useCallback } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { useStoryStore } from "@/stores/storyStore";
+import { sendSteering } from "@/lib/api";
 import { API_BASE } from "@/lib/backend";
 
 export function useChat(sessionId: string) {
   const sendMessage = useCallback(
     async (content: string) => {
+      const notebookState = useNotebookStore.getState();
+      if (notebookState.pipelineRunning) {
+        const id = useChatStore.getState().addUserMessage(content, {
+          kind: "steering",
+          status: "queued",
+        });
+        try {
+          await sendSteering(sessionId, content, id);
+        } catch {
+          useChatStore.getState().updateMessageMeta(id, {
+            kind: "steering",
+            status: "failed",
+          });
+        }
+        return;
+      }
+
+      useChatStore.getState().addUserMessage(content);
       useChatStore.getState().setTyping(true);
 
       try {

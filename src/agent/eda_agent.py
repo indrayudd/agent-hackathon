@@ -23,6 +23,7 @@ def run_agent(
     max_loops: int = 2,
     loop_timeout: int = 180,
     seed: int | None = None,
+    research_direction: str | None = None,
 ):
     """
     Run the EDA agent loop.
@@ -45,7 +46,11 @@ def run_agent(
 
     from backend.services.kernel_manager import execute_code, shutdown_kernel
 
-    state = AgentState(dataset_path=dataset_path, session_id=session_id)
+    state = AgentState(
+        dataset_path=dataset_path,
+        session_id=session_id,
+        research_direction=research_direction.strip() if research_direction else None,
+    )
     goals = build_goal_checklist()
     filename = os.path.basename(dataset_path)
 
@@ -123,6 +128,35 @@ def run_agent(
         push_event(session_id, {"type": "thinking", "content": content, "notebook_id": "main"})
         time.sleep(0.02)
 
+    def _drain_steering(checkpoint: str, *, acknowledge: bool = True) -> list[dict]:
+        """Read queued user steering at safe gaps between agent actions."""
+        try:
+            from backend.services.steering_service import drain_steering
+            items = drain_steering(session_id)
+        except Exception as exc:
+            _LOG.warning("Steering drain failed at %s: %s", checkpoint, exc)
+            return []
+
+        for item in items:
+            state.steering_notes.append(item)
+            state.consumed_steering_ids.append(item["id"])
+            push_event(session_id, {
+                "type": "steering_read",
+                "message_id": item["id"],
+                "content": item["content"],
+                "read_at": item.get("read_at"),
+                "checkpoint": checkpoint,
+            })
+
+        if items and acknowledge:
+            joined = "; ".join(item["content"] for item in items)
+            _think(f"Steering incorporated: {joined[:180]}")
+            _write_and_run(
+                f"> Steering applied: {joined[:240]}",
+                "markdown",
+            )
+        return items
+
     def _write_and_run(
         code: str,
         cell_type: str = "code",
@@ -150,6 +184,7 @@ def run_agent(
 
         if cell_type == "markdown":
             state.register_cell(target_cell_id, "markdown", code, notebook_id="main")
+            _drain_steering(f"after_cell:{target_cell_id}", acknowledge=False)
             return target_cell_id, [], None
 
         last_code_cell_id = target_cell_id
@@ -173,6 +208,7 @@ def run_agent(
             })
 
         state.register_cell(target_cell_id, "code", code, outputs, notebook_id="main")
+        _drain_steering(f"after_cell:{target_cell_id}", acknowledge=False)
         time.sleep(0.05)
         return target_cell_id, outputs, error
 
@@ -251,6 +287,8 @@ def run_agent(
                 "raw_output": output_text[:2000],  # preserve raw numbers for KG/story
             })
 
+        _drain_steering(f"before_followup:{goal.name}")
+
         # Check for ONE follow-up only (not 3) — must be genuinely surprising
         step = decide_next_step(
             state_summary=state.summarize(),
@@ -261,6 +299,7 @@ def run_agent(
                 if g.name not in state.phases_completed and not g.should_skip(state)
             ],
             columns=state.columns,
+            run_guidance=state.run_guidance(),
         )
 
         if step["follow_up"] and step["code"]:
@@ -278,6 +317,7 @@ def run_agent(
             goals_remaining=[g.name for g in goals if g.name not in state.phases_completed],
             columns=state.columns,
             error_context=error,
+            run_guidance=state.run_guidance(),
         )
         failed_cell_id = last_code_cell_id
 
@@ -320,6 +360,7 @@ def run_agent(
             goals_remaining=[g.name for g in goals if g.name not in state.phases_completed],
             columns=state.columns,
             error_context=f"Original error: {error}\nFirst fix error: {fix_error1}",
+            run_guidance=state.run_guidance(),
         )
         if not second_fix or not second_fix.get("code"):
             state.add_error(current_phase, error, "No alternative fix found")
@@ -340,9 +381,14 @@ def run_agent(
         _skip_cell(error)
 
     # ---- Title cell ----
-    _write_and_run(
+    title_cell = (
         f"# Exploratory Data Analysis: `{filename}`\n\n"
-        f"Automated analysis powered by **AgenticEDA**.",
+        f"Automated analysis powered by **AgenticEDA**."
+    )
+    if state.research_direction:
+        title_cell += f"\n\n**Research direction:** {state.research_direction}"
+    _write_and_run(
+        title_cell,
         "markdown",
     )
 
@@ -352,6 +398,7 @@ def run_agent(
     _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "upcoming"}, {"phase": "Report Generation", "status": "upcoming"}])
 
     for goal in goals:
+        _drain_steering(f"before_goal:{goal.name}")
         if goal.should_skip(state):
             _LOG.info("Skipping goal: %s (condition met)", goal.name)
             continue
@@ -664,6 +711,7 @@ def run_agent(
         _LOG.warning("Dataset checkpoint not found at %s — subagents will use main kernel", cache_path)
 
     _transition("Investigation Phase", "Generating hypotheses from initial findings...", render_cell=False)
+    _drain_steering("before_hypothesis_generation")
     # Track investigation sub-items (hypothesis titles + statuses)
     _investigation_details: list[dict] = [{"label": "Generating hypotheses...", "status": "current"}]
     _push_plan(None, extra_phases=[{"phase": "Deep Investigation", "status": "current", "details": _investigation_details}, {"phase": "Report Generation", "status": "upcoming"}])
@@ -711,6 +759,7 @@ def run_agent(
                 row_count=state.row_count,
                 col_count=state.col_count,
                 kg_context=kg_context,
+                run_guidance=state.run_guidance(),
             )
 
             # Deduplicate against KG
@@ -845,6 +894,7 @@ def run_agent(
                     max_cells=5,
                     notebook_id=notebook_id,
                     kg_context=kg.get_context_for_hypothesis_generation() if kg else "",
+                    run_guidance=state.run_guidance(),
                     result_queue=result_queue,
                     deadline=subagent_deadline,
                 ),

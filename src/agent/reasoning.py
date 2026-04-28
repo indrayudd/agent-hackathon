@@ -14,6 +14,7 @@ def decide_next_step(
     goals_remaining: list[str],
     columns: list[str] | None = None,
     error_context: str | None = None,
+    run_guidance: str = "",
 ) -> dict:
     """
     Ask the LLM what code to write next based on what we just observed.
@@ -28,6 +29,11 @@ def decide_next_step(
         llm = get_chat_model()
 
         col_list = ", ".join(f'"{c}"' for c in (columns or []))
+        guidance_section = (
+            f"\n\nUser guidance for this run:\n{run_guidance}"
+            if run_guidance.strip()
+            else ""
+        )
 
         if error_context:
             system = f"""You are fixing a Python error in a Jupyter notebook EDA.
@@ -47,7 +53,7 @@ Rules:
 Respond with EXACTLY this JSON (no markdown fencing):
 {{"thinking": "what went wrong and how I'm fixing it", "code": "corrected python code", "cell_type": "code", "phase": "{current_phase}", "follow_up": false}}"""
 
-            human = f"Error:\n{error_context}\n\nState:\n{state_summary}"
+            human = f"Error:\n{error_context}\n\nState:\n{state_summary}{guidance_section}"
         else:
             system = f"""You are an expert data analyst doing EDA in a Jupyter notebook.
 Decide if a follow-up investigation cell is needed.
@@ -76,6 +82,7 @@ Last output (truncated):
 
 Phase: {current_phase}
 Goals remaining: {', '.join(goals_remaining)}
+{guidance_section}
 
 Is there a specific hypothesis worth testing with a NEW cell? Usually no."""
 

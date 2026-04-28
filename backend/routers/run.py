@@ -12,6 +12,11 @@ from fastapi.responses import JSONResponse
 import nbformat
 
 from backend.services.session_manager import get_session_dir
+from backend.services.steering_service import (
+    clear_steering,
+    enqueue_steering,
+    get_steering_items,
+)
 from backend.routers.stream import push_event
 from src.reporting.plot_contract import (
     plot_artifacts_from_outputs,
@@ -25,6 +30,12 @@ class RunConfig(BaseModel):
     max_loops: int = 2
     loop_timeout: int = 300
     seed: int | None = None
+    research_direction: str | None = None
+
+
+class SteeringRequest(BaseModel):
+    content: str
+    message_id: str | None = None
 
 router = APIRouter(tags=["run"])
 _LOG = logging.getLogger(__name__)
@@ -35,7 +46,8 @@ _running: dict[str, threading.Thread] = {}
 
 def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathlib.Path,
                          max_subagents: int = 3, max_loops: int = 2, loop_timeout: int = 300,
-                         seed: int | None = None):
+                         seed: int | None = None,
+                         research_direction: str | None = None):
     """Run the EDA agent loop in a background thread, streaming all events."""
     try:
         (session_dir / "status.json").write_text(
@@ -51,6 +63,7 @@ def _run_agent_in_thread(session_id: str, dataset_path: str, session_dir: pathli
             max_loops=max_loops,
             loop_timeout=loop_timeout,
             seed=seed,
+            research_direction=research_direction,
         )
 
         # Save state summary
@@ -321,6 +334,7 @@ async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
         raise HTTPException(status_code=400, detail="No dataset uploaded")
 
     dataset_path = str(dataset_files[0])
+    clear_steering(session_id)
     thread = threading.Thread(
         target=_run_agent_in_thread,
         args=(session_id, dataset_path, session_dir),
@@ -329,6 +343,7 @@ async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
             "max_loops": config.max_loops,
             "loop_timeout": config.loop_timeout,
             "seed": config.seed,
+            "research_direction": config.research_direction,
         },
         daemon=True,
     )
@@ -339,6 +354,43 @@ async def run_pipeline(session_id: str, config: RunConfig = RunConfig()):
         status_code=202,
         content={"status": "accepted", "session_id": session_id},
     )
+
+
+@router.post("/run/{session_id}/steering")
+async def enqueue_run_steering(session_id: str, req: SteeringRequest):
+    """Queue user steering for a currently running agent."""
+    try:
+        get_session_dir(session_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Steering content cannot be blank")
+
+    thread = _running.get(session_id)
+    if thread is None or not thread.is_alive():
+        raise HTTPException(status_code=409, detail="Agent is not running")
+
+    item = enqueue_steering(session_id, content, message_id=req.message_id)
+    push_event(session_id, {
+        "type": "steering_queued",
+        "message_id": item["id"],
+        "content": item["content"],
+        "status": item["status"],
+    })
+    return item
+
+
+@router.get("/run/{session_id}/steering")
+async def get_run_steering(session_id: str):
+    """Return steering items for a session."""
+    try:
+        get_session_dir(session_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return {"items": get_steering_items(session_id)}
 
 
 @router.get("/run/{session_id}/status")

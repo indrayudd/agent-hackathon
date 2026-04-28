@@ -5,13 +5,16 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
+type RegexReplacement = string | ((substring: string, ...args: string[]) => string);
+type RegexReplacementRule = [RegExp, RegexReplacement];
+
 /**
  * Apply a set of regex replacements only to non-math segments of text.
  * Math blocks ($...$, $$...$$) are preserved untouched.
  */
 function applyOutsideMath(
   text: string,
-  replacements: Array<[RegExp, string | ((...args: string[]) => string)]>,
+  replacements: RegexReplacementRule[],
 ): string {
   const parts = text.split(/(\$\$[\s\S]*?\$\$|\$(?:[^$\n]|\\\$)+?\$)/g);
   return parts
@@ -24,7 +27,7 @@ function applyOutsideMath(
       }
       let f = part;
       for (const [re, repl] of replacements) {
-        f = f.replace(re, repl as any);
+        f = typeof repl === "string" ? f.replace(re, repl) : f.replace(re, repl);
       }
       return f;
     })
@@ -37,7 +40,7 @@ function applyOutsideMath(
  */
 function applyInsideMath(
   text: string,
-  replacements: Array<[RegExp, string | ((...args: string[]) => string)]>,
+  replacements: RegexReplacementRule[],
 ): string {
   const parts = text.split(/(\$\$[\s\S]*?\$\$|\$(?:[^$\n]|\\\$)+?\$)/g);
   return parts
@@ -48,7 +51,7 @@ function applyInsideMath(
       if (!isMath) return part; // non-math — skip
       let f = part;
       for (const [re, repl] of replacements) {
-        f = f.replace(re, repl as any);
+        f = typeof repl === "string" ? f.replace(re, repl) : f.replace(re, repl);
       }
       return f;
     })

@@ -6,6 +6,7 @@ import NotebookPane from "@/components/notebook/NotebookPane";
 import StoryPane from "@/components/story/StoryPane";
 import HistoryPanel from "@/components/history/HistoryPanel";
 import ChatSidebar from "@/components/chat/ChatSidebar";
+import AboutPane from "@/components/about/AboutPane";
 import AgentActivityBadge from "../../../components/layout/AgentActivityBadge";
 import { useNotebookStore } from "@/stores/notebookStore";
 import { useStoryStore } from "@/stores/storyStore";
@@ -50,6 +51,8 @@ function ContextWindowIndicator({ cellCount, findingsCount }: { cellCount: numbe
   );
 }
 import type { Cell, CellOutput, Session } from "@/lib/types";
+
+type SessionTab = "notebook" | "story" | "history" | "about";
 
 function normalizeText(value: unknown): string {
   if (Array.isArray(value)) return value.join("");
@@ -119,7 +122,7 @@ export default function SessionPage() {
   const params = useParams<{ id: string | string[] }>();
   const router = useRouter();
   const sessionId = Array.isArray(params.id) ? params.id[0] : params.id;
-  const [activeTab, setActiveTabState] = useState<"notebook" | "story" | "history">("notebook");
+  const [activeTab, setActiveTabState] = useState<SessionTab>("notebook");
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
   const contentPaneRef = useRef<HTMLElement | null>(null);
@@ -148,10 +151,11 @@ export default function SessionPage() {
     if (tab === "notebook") return root.querySelector<HTMLElement>("[data-notebook-scroll]");
     if (tab === "story") return root.querySelector<HTMLElement>(".story-shell");
     if (tab === "history") return root.querySelector<HTMLElement>(".history-scroll-pane");
+    if (tab === "about") return root.querySelector<HTMLElement>(".about-scroll-pane");
     return null;
   }, []);
 
-  const setActiveTab = useCallback((tab: "notebook" | "story" | "history") => {
+  const setActiveTab = useCallback((tab: SessionTab) => {
     setActiveTabState((prev) => {
       const container = findScrollContainer(prev);
       if (container) {
@@ -165,7 +169,7 @@ export default function SessionPage() {
 
   useEffect(() => {
     // Restore scroll positions from sessionStorage on mount
-    for (const tab of ["notebook", "story", "history"]) {
+    for (const tab of ["notebook", "story", "history", "about"]) {
       try {
         const saved = sessionStorage.getItem(`scroll_${sessionId}_${tab}`);
         if (saved) scrollPositionsRef.current[tab] = parseInt(saved, 10);
@@ -248,7 +252,7 @@ export default function SessionPage() {
 
   useAgentStream(sessionId);
 
-  const tabClass = (tab: "notebook" | "story" | "history") =>
+  const tabClass = (tab: SessionTab) =>
     resolvedTab === tab
       ? "text-blue-700 border-b-2 border-blue-700 font-semibold"
       : "text-slate-500 hover:bg-slate-50";
@@ -322,6 +326,12 @@ export default function SessionPage() {
             >
               History
             </button>
+            <button
+              onClick={() => setActiveTab("about")}
+              className={`px-3 h-full flex items-center text-sm tracking-tight font-headline transition-colors ${tabClass("about")}`}
+            >
+              About
+            </button>
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -371,6 +381,15 @@ export default function SessionPage() {
                 history
               </span>
               <span className="text-[10px] font-semibold mt-1">History</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("about")}
+              className={`w-full flex flex-col items-center py-2 transition-all duration-150 ${sideNavClass("about")}`}
+            >
+              <span className="material-symbols-outlined" style={resolvedTab === "about" ? { fontVariationSettings: '"FILL" 1' } : undefined}>
+                info
+              </span>
+              <span className="text-[10px] font-semibold mt-1">About</span>
             </button>
           </div>
         </aside>
@@ -521,6 +540,9 @@ export default function SessionPage() {
           </div>
           <div className={resolvedTab === "history" ? "flex flex-col flex-1 overflow-hidden" : "hidden"}>
             <HistoryPanel sessionId={sessionId} onClose={() => setActiveTab("notebook")} />
+          </div>
+          <div className={resolvedTab === "about" ? "flex flex-col flex-1 overflow-hidden" : "hidden"}>
+            <AboutPane />
           </div>
         </main>
 

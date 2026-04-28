@@ -25,6 +25,31 @@ Current intended stage order:
 - Configuration lives under [`src/config/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/config).
 - Shared deterministic helpers live under [`src/tools/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/tools).
 
+## Graphify Orientation
+
+- A `graphify` run over `src/` produced the current codebase map under
+  [`graphify-out/`](/Users/indro/Projects/Hackathon/AgenticEDAHackathon/graphify-out).
+  Key outputs are `graph.html`, `GRAPH_REPORT.md`, and `graph.json`.
+- The `src/` graph was code-only AST extraction: 959 nodes, 1,495 edges, and
+  41 communities. It did not use semantic LLM extraction tokens.
+- The highest-connectivity nodes were:
+  - `load_dataset()`
+  - `run_agent()`
+  - `write_stage_trace()`
+  - `_merge()`
+  - `get_chat_model()`
+- The graph reinforces that this backend is a staged EDA pipeline, with
+  cross-cutting glue concentrated in dataset loading, trace writing, model
+  access, and pipeline fan-in/merge helpers.
+- `write_stage_trace()` is a major cross-stage connector. It links causal,
+  quality-handling, integrity, drift, changepoint, panel comparison, and
+  temporal-analysis stages through shared trace/report artifact behavior.
+- `get_chat_model()` is another broad connector because multiple agentic or
+  LLM-gated stages depend on the same configured chat-model access path.
+- When making changes, treat `src/pipeline.py`, `src/main.py`,
+  `src/tools/trace_writer.py`, dataset loading helpers, and model settings as
+  high-blast-radius areas. Small changes there can affect many stages.
+
 ## Schema / Series Structure
 
 - The time column is derived by the formatter stage. It should not be manually

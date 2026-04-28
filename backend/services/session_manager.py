@@ -103,4 +103,10 @@ def delete_session(session_id: str) -> None:
         If the session directory does not exist.
     """
     session_dir = get_session_dir(session_id)
+    try:
+        from backend.services.steering_service import clear_steering
+
+        clear_steering(session_id)
+    except Exception:
+        pass
     shutil.rmtree(session_dir)

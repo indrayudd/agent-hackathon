@@ -107,6 +107,7 @@ def run_subagent(
     kernel_id: str | None = None,
     notebook_id: str = "main",
     kg_context: str = "",
+    run_guidance: str = "",
     deadline: float = 0,
 ) -> InvestigationResult:
     """
@@ -231,11 +232,18 @@ def run_subagent(
     # --- Adaptive investigation loop ---
     # Each step: LLM generates ONE cell → execute → feed output back → LLM decides next.
     # Budget: up to max_cells steps (default 5). Each step sees all previous output.
+    all_outputs: list[str] = []
+    cells_executed = 0
     try:
         from src.config.config import get_chat_model, get_subagent_model
         from langchain_core.messages import SystemMessage, HumanMessage
 
         llm = get_chat_model(model=get_subagent_model(), max_retries=1)
+        guidance_section = (
+            f"\n\nUser guidance for this investigation:\n{run_guidance}"
+            if run_guidance.strip()
+            else ""
+        )
 
         system_prompt = f"""You are investigating a data hypothesis step by step. Write ONE Python code cell at a time, see its output, then decide the next step.
 
@@ -244,6 +252,7 @@ Relevant columns: [{relevant_str}]
 Time column: {time_col or 'none'}
 Variable `df` is already loaded.
 {f"Previous findings (don't repeat): " + kg_context[:500] if kg_context else ""}
+{guidance_section}
 
 Rules:
 - Write ONE code cell per response
@@ -262,9 +271,6 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Hypothesis: {hypothesis_title}\nDescription: {hypothesis_description}\n\nGenerate the first analysis step."),
         ]
-
-        all_outputs: list[str] = []
-        cells_executed = 0
 
         for step in range(max_cells):
             if _past_deadline():
@@ -382,8 +388,12 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
         # Fallback: basic analysis
         if relevant_cols and not all_outputs:
             col = relevant_cols[0]
-            _write_and_execute(f'print(df["{col}"].describe())')
-            all_outputs.append(f"Described {col}")
+            _, fallback_outputs, fallback_error = _write_and_execute(f'print(df["{col}"].describe())')
+            if fallback_error:
+                all_outputs.append(f"Fallback describe for {col} failed: {fallback_error}")
+            else:
+                output_text = _extract_text(fallback_outputs)
+                all_outputs.append(f"Described {col}:\n{output_text}")
 
     # --- Synthesize conclusion ---
     combined_output = "\n---\n".join(all_outputs[:5])
@@ -475,7 +485,10 @@ Set "done": true when you have enough evidence to conclude. When done, set "code
     except Exception as exc:
         _LOG.warning("Conclusion synthesis failed: %s", exc)
         if all_outputs:
-            result.finding = f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps."
+            result.finding = (
+                f"Investigation of '{hypothesis_title}' produced {len(all_outputs)} analysis steps. "
+                f"Evidence: {combined_output[:1000]}"
+            )
         else:
             result.finding = f"Could not investigate '{hypothesis_title}' due to errors."
         result.confidence = 0.15

@@ -30,6 +30,8 @@ type StreamEvent =
   | { type: "notebook_clear"; notebook_id?: string }
   | { type: "notebook_focus"; notebook_id?: string }
   | { type: "plan_update"; steps?: Array<{ phase: string; status: string; details?: Array<{ label: string; status: string }> }> }
+  | { type: "steering_queued"; message_id: string; content?: string; status?: "queued" }
+  | { type: "steering_read"; message_id: string; content?: string; read_at?: string; checkpoint?: string }
   | { type: "complete"; summary?: string };
 
 export function useAgentStream(sessionId: string) {
@@ -68,6 +70,18 @@ export function useAgentStream(sessionId: string) {
               store.setLatestThinking(data.content || "");
             }, 150);
             store.setAgentActivity("thinking", data.content || "Thinking...", { notebookId: "main" });
+            break;
+
+          case "steering_queued":
+            if (data.message_id) {
+              chat.updateMessageMeta(data.message_id, { kind: "steering", status: "queued" });
+            }
+            break;
+
+          case "steering_read":
+            if (data.message_id) {
+              chat.updateMessageMeta(data.message_id, { kind: "steering", status: "read" });
+            }
             break;
 
           case "cell_write": {

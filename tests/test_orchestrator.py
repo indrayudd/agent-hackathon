@@ -78,6 +78,62 @@ class TestRunEndpointConfig(unittest.TestCase):
         assert "max_loops" in source
 
 
+class TestSteeringIntegration(unittest.TestCase):
+    def test_run_config_accepts_research_direction(self):
+        from backend.routers.run import RunConfig
+
+        config = RunConfig(research_direction="focus on churn")
+
+        assert config.research_direction == "focus on churn"
+
+    def test_run_agent_accepts_research_direction(self):
+        from src.agent.eda_agent import run_agent
+
+        sig = inspect.signature(run_agent)
+
+        assert "research_direction" in sig.parameters
+        assert sig.parameters["research_direction"].default is None
+
+
+class TestSteeringAgentState(unittest.TestCase):
+    def test_agent_state_has_steering_fields(self):
+        from src.agent.state import AgentState
+
+        state = AgentState(
+            dataset_path="/tmp/test.csv",
+            session_id="test",
+            research_direction="focus on downtime",
+        )
+        state.steering_notes.append({"content": "compare weekend behavior"})
+
+        assert state.research_direction == "focus on downtime"
+        assert isinstance(state.steering_notes, list)
+        assert isinstance(state.consumed_steering_ids, list)
+        assert "focus on downtime" in state.run_guidance()
+        assert "compare weekend behavior" in state.run_guidance()
+
+    def test_reasoning_accepts_guidance(self):
+        from src.agent.reasoning import decide_next_step
+
+        sig = inspect.signature(decide_next_step)
+
+        assert "run_guidance" in sig.parameters
+
+    def test_hypothesis_generation_accepts_guidance(self):
+        from src.agent.hypothesis import generate_hypotheses
+
+        sig = inspect.signature(generate_hypotheses)
+
+        assert "run_guidance" in sig.parameters
+
+    def test_subagent_accepts_guidance(self):
+        from src.agent.subagent import run_subagent
+
+        sig = inspect.signature(run_subagent)
+
+        assert "run_guidance" in sig.parameters
+
+
 class TestChatKGIntegration(unittest.TestCase):
     def test_chat_has_kg_support(self):
         with open("backend/routers/chat.py") as f:

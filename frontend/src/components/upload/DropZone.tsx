@@ -29,6 +29,7 @@ export default function DropZone() {
   const [maxSubagents, setMaxSubagents] = useState(3);
   const [maxLoops, setMaxLoops] = useState(2);
   const [seedInput, setSeedInput] = useState("");
+  const [researchDirection, setResearchDirection] = useState("");
 
   const onDrop = useCallback((accepted: File[]) => {
     setError(null);
@@ -52,10 +53,11 @@ export default function DropZone() {
         max_subagents: maxSubagents,
         max_loops: maxLoops,
         seed: parsedSeed != null && Number.isFinite(parsedSeed) ? parsedSeed : undefined,
+        research_direction: researchDirection.trim() || undefined,
       }).catch(() => {});
       router.push(`/session/${data.session_id}`);
-    } catch (err: any) {
-      setError(err.message ?? "Upload failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Upload failed");
       setUploading(false);
     }
   };
@@ -127,6 +129,16 @@ export default function DropZone() {
               />
             </label>
           </div>
+          <label className="mt-4 flex flex-col gap-1 text-sm text-on-surface-variant font-body">
+            Research direction (optional)
+            <textarea
+              value={researchDirection}
+              onChange={(e) => setResearchDirection(e.target.value)}
+              rows={3}
+              placeholder="Focus the analysis on anomalies, temporal shifts, operational risks, or a specific business question."
+              className="px-3 py-2 rounded border border-outline-variant bg-surface text-on-surface font-body resize-none"
+            />
+          </label>
         </div>
       )}
 

@@ -130,7 +130,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
-            model_kwargs=extra_kwargs or None,
+            model_kwargs=extra_kwargs,
         )
     elif provider == "openai_compatible":
         base_url = _need("OPENAI_COMPAT_BASE_URL")
@@ -142,7 +142,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
-            model_kwargs=extra_kwargs or None,
+            model_kwargs=extra_kwargs,
         )
     elif provider == "azure_openai_v1":
         azure_base = _need("AZURE_OPENAI_BASE_URL")
@@ -154,7 +154,7 @@ def get_chat_model(*, model: str | None = None, max_retries: int | None = None) 
             temperature=settings.temperature,
             timeout=settings.timeout,
             max_retries=retries,
-            model_kwargs=extra_kwargs or None,
+            model_kwargs=extra_kwargs,
         )
     elif provider == "anthropic":
         _need("ANTHROPIC_API_KEY")

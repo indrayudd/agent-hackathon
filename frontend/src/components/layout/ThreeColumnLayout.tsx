@@ -71,7 +71,6 @@ export default function ThreeColumnLayout({ left, center, right }: Props) {
 
     dragging.current = null;
     document.removeEventListener("mousemove", onMouseMove);
-    document.removeEventListener("mouseup", onMouseUp);
   }, [onMouseMove]);
 
   const startDrag = useCallback((side: "left" | "right") => {
@@ -79,7 +78,7 @@ export default function ThreeColumnLayout({ left, center, right }: Props) {
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
+    document.addEventListener("mouseup", onMouseUp, { once: true });
   }, [onMouseMove, onMouseUp]);
 
   const toggleLeft = useCallback(() => {

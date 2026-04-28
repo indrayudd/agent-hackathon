@@ -13,6 +13,7 @@ class AgentState:
 
     dataset_path: str
     session_id: str
+    research_direction: str | None = None
 
     # Discovered during ingestion
     dataset_loaded: bool = False
@@ -42,6 +43,8 @@ class AgentState:
     max_subagents: int = 3
     max_loops: int = 2
     plan_steps: list[dict] = field(default_factory=list)  # current execution plan for REST endpoint
+    steering_notes: list[dict] = field(default_factory=list)
+    consumed_steering_ids: list[str] = field(default_factory=list)
 
     def add_finding(self, phase: str, finding: str):
         self.findings.append({"phase": phase, "finding": finding})
@@ -75,6 +78,21 @@ class AgentState:
             "outputs": outputs or [],
             "notebook_id": notebook_id,
         })
+
+    def run_guidance(self) -> str:
+        """Return compact user guidance for prompts."""
+        parts: list[str] = []
+        if self.research_direction:
+            parts.append(f"Initial research direction: {self.research_direction}")
+        if self.steering_notes:
+            notes = "\n".join(
+                f"- {item.get('content', '')}"
+                for item in self.steering_notes[-5:]
+                if item.get("content")
+            )
+            if notes:
+                parts.append(f"Recent user steering:\n{notes}")
+        return "\n\n".join(parts)
 
     def summarize(self) -> str:
         lines = [f"EDA complete on {self.dataset_path}"]

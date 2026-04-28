@@ -1,7 +1,15 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, type CSSProperties, type ComponentType } from "react";
+
+type PlotComponentProps = {
+  data: unknown[];
+  layout: Record<string, unknown>;
+  config: Record<string, unknown>;
+  useResizeHandler?: boolean;
+  style?: CSSProperties;
+};
 
 const Plot = dynamic(
   () =>
@@ -10,9 +18,9 @@ const Plot = dynamic(
       import("react-plotly.js/factory"),
     ]).then(([Plotly, factoryMod]) => {
       const createPlotlyComponent = factoryMod.default as (
-        plotly: typeof Plotly
-      ) => React.ComponentType<any>;
-      return createPlotlyComponent(Plotly as any);
+        plotly: unknown
+      ) => ComponentType<PlotComponentProps>;
+      return createPlotlyComponent(Plotly);
     }),
   { ssr: false, loading: () => <div className="p-4 text-on-surface/50 text-sm">Loading chart...</div> }
 );
