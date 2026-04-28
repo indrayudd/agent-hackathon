@@ -200,7 +200,8 @@ export default function AboutPane({ compact = false }: AboutPaneProps) {
             <p className="text-4xl font-extrabold tracking-tight text-primary font-headline md:text-5xl">
               30 hypotheses in 25 minutes
             </p>
-            <p className="mt-2 text-sm text-on-surface-variant">
+            <p className="mt-3 text-lg font-bold text-primary/70 font-headline">99% less time</p>
+            <p className="mt-1 text-sm text-on-surface-variant">
               A workload that typically takes a data scientist 1 to 2 weeks of manual exploration.
             </p>
           </div>
