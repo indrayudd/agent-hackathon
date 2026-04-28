@@ -198,10 +198,10 @@ export default function AboutPane({ compact = false }: AboutPaneProps) {
           {/* Hero metric */}
           <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/[0.06] to-transparent p-6 text-center">
             <p className="text-4xl font-extrabold tracking-tight text-primary font-headline md:text-5xl">
-              15 hypotheses in 25 minutes
+              30 hypotheses in 25 minutes
             </p>
             <p className="mt-2 text-sm text-on-surface-variant">
-              A workload that typically takes a data scientist 3 to 5 full days of manual exploration.
+              A workload that typically takes a data scientist 1 to 2 weeks of manual exploration.
             </p>
           </div>
 
@@ -235,7 +235,7 @@ export default function AboutPane({ compact = false }: AboutPaneProps) {
               </p>
             </div>
             <div className="rounded-xl border border-outline-variant/40 bg-white/80 p-5">
-              <p className="text-2xl font-extrabold text-on-surface font-headline">~$370k</p>
+              <p className="text-2xl font-extrabold text-on-surface font-headline">~$740k</p>
               <p className="mt-1 text-[13px] leading-[1.6] text-on-surface-variant">
                 in recovered productivity per year for a 10-person data team, reclaiming exploratory time at median salary.
               </p>
