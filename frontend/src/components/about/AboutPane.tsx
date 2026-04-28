@@ -189,6 +189,66 @@ export default function AboutPane({ compact = false }: AboutPaneProps) {
           </div>
         </div>
 
+        {/* Impact */}
+        <div className="flex flex-col gap-5">
+          <h2 className="text-lg font-extrabold tracking-tight text-on-surface font-headline">
+            Why it matters
+          </h2>
+
+          {/* Hero metric */}
+          <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/[0.06] to-transparent p-6 text-center">
+            <p className="text-4xl font-extrabold tracking-tight text-primary font-headline md:text-5xl">
+              15 hypotheses in 25 minutes
+            </p>
+            <p className="mt-2 text-sm text-on-surface-variant">
+              A workload that typically takes a data scientist 3 to 5 full days of manual exploration.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-xl border border-outline-variant/40 bg-white/80 p-5">
+              <p className="text-2xl font-extrabold text-on-surface font-headline">~66%</p>
+              <p className="mt-1 text-[13px] leading-[1.6] text-on-surface-variant">
+                of a data scientist&apos;s time goes to data prep and exploratory analysis.{" "}
+                <a
+                  href="https://www.anaconda.com/state-of-data-science-2020"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline underline-offset-2"
+                >
+                  Anaconda, 2020
+                </a>
+              </p>
+            </div>
+            <div className="rounded-xl border border-outline-variant/40 bg-white/80 p-5">
+              <p className="text-2xl font-extrabold text-on-surface font-headline">$112k</p>
+              <p className="mt-1 text-[13px] leading-[1.6] text-on-surface-variant">
+                median data scientist salary in the US.{" "}
+                <a
+                  href="https://www.bls.gov/ooh/math/data-scientists.htm"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline underline-offset-2"
+                >
+                  BLS, 2024
+                </a>
+              </p>
+            </div>
+            <div className="rounded-xl border border-outline-variant/40 bg-white/80 p-5">
+              <p className="text-2xl font-extrabold text-on-surface font-headline">~$370k</p>
+              <p className="mt-1 text-[13px] leading-[1.6] text-on-surface-variant">
+                in recovered productivity per year for a 10-person data team, reclaiming exploratory time at median salary.
+              </p>
+            </div>
+          </div>
+
+          <p className="text-[13px] leading-6 text-on-surface-variant">
+            When EDA takes minutes instead of days, teams stop rationing which datasets get explored.
+            Junior analysts produce senior-level investigation. Every finding ships with an audit trail
+            for free.
+          </p>
+        </div>
+
         {/* Closing */}
         <footer className="border-t border-outline-variant/40 pt-6 pb-4">
           <p className="text-sm leading-7 text-on-surface-variant">
