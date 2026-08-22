@@ -6,7 +6,9 @@ RUN npm ci
 
 COPY . .
 
-# At build time, API is proxied through nginx on same origin
+# Left empty so the client falls back to inferApiBase() in src/lib/backend.ts,
+# which derives the API origin from window.location at runtime. Set this to a
+# fixed URL only when the backend is not reachable from the browser's origin.
 ENV NEXT_PUBLIC_API_URL=""
 RUN npm run build
 

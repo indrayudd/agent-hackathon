@@ -29,14 +29,88 @@ Frontend (Next.js)              Backend (FastAPI)              Agent (Python)
 
 ## How it works
 
-1. **Initial EDA**: data loading, quality checks, correlations, time series analysis — each cell output is interpreted via multimodal LLM (text + plots)
-2. **Hypothesis generation**: LLM proposes hypotheses based on findings, deduplicates against KG
-3. **Parallel investigation**: N subagent processes spawn, each with its own kernel connection. Each subagent runs an adaptive loop (up to 5 cells), seeing previous stdout + plots at every step. Failed or timed-out investigations are reported without blocking the rest of the run
-4. **Conclusion synthesis**: each subagent produces a vision-aware conclusion (single multimodal LLM call with all plots)
-5. **Accumulation**: main agent collects results, ingests into KG, writes to notebook with progress bar
-6. **Loop**: repeat with new hypotheses informed by prior findings. Stop on convergence
-7. **Final synthesis**: LLM cross-references all findings, flags contradictions, writes numbered conclusions
-8. **Story generation**: KG sections + executive summary + plot artifacts → story.json → web view + PDF
+A run is a single call to `run_agent` (`src/agent/eda_agent.py`), started by
+`POST /api/run/{session_id}` in a background thread. It executes three phases in
+order.
+
+### 1. Initial EDA pass
+
+The agent walks an ordered checklist defined in `src/agent/goals.py`: load, inspect
+dtypes, describe, parse datetime, audit and handle missing values, distributions,
+time series, seasonality, rolling stats, outliers, correlations, train/test split,
+summary.
+
+Each goal carries a `should_skip(state)` predicate evaluated against live state, so
+steps drop out when they do not apply. Time-series goals are skipped when no usable
+time axis was parsed. Correlations are skipped when fewer than two numeric columns
+exist.
+
+Cell source comes from deterministic generators in `src/agent/code_templates.py`,
+not from the LLM. After execution the output goes to `interpret_output` for a
+one-sentence finding, with any plot passed along as an image. The result then goes
+to `decide_next_step`, which may issue at most one follow-up cell per goal.
+
+Cell errors are retried twice with LLM-generated corrections that see the prior
+error text. If both attempts fail, the cell is replaced with a markdown skip note
+and the run continues.
+
+### 2. Investigation loops
+
+Each loop runs hypothesis generation, parallel investigation, and accumulation.
+
+Hypothesis generation (`src/agent/hypothesis.py`) proposes candidates from current
+findings plus knowledge-graph context. Each candidate is checked against the graph
+by similarity. One that matches an existing hypothesis above 0.75 similarity, where
+confidence already exceeds 0.8, is discarded without being re-tested.
+
+Investigation dispatches up to `max_subagents` hypotheses in parallel. Before
+dispatch the cleaned dataframe is written to `.cache/df_clean.parquet`, and each
+subagent is allocated its own kernel from `backend/services/kernel_pool.py`, seeded
+from that file. If the checkpoint is unavailable, subagents share the main kernel.
+
+Subagents run as `multiprocessing.Process` instead of threads, which allows a wedged
+worker to be terminated once it passes its deadline. Each subagent runs its own
+adaptive loop (`src/agent/subagent.py`): generate one cell, execute it, feed the
+output back into the conversation, decide the next cell. Plot images are included in
+that feedback when a cell produces one. The loop stops when the model sets `done` or
+the cell budget is reached. Common failures such as a missing import are repaired by
+pattern match without an LLM call.
+
+Events flow from child processes over a shared queue to a drainer thread that
+forwards them to the WebSocket. Subagent cells stream into their own notebook tabs
+while the run continues. A subagent that fails or exceeds its deadline is reported
+with that status and does not block the others.
+
+Accumulation ingests each result into the knowledge graph as a typed node carrying
+confidence, evidence cell IDs, and plot references. Conclusions that share columns
+then reinforce each other.
+
+A loop ends the phase early if it is not the first and produced no result above 0.5
+confidence.
+
+### 3. Synthesis
+
+A final LLM call cross-references the accumulated findings, flags contradictions
+between investigations, and writes numbered conclusions.
+`src/reporting/story_builder.py` turns the graph into `story.json`, containing an
+executive summary, per-investigation sections, and plot artifacts. That file backs
+both the web story view and the PDF export.
+
+### Steering
+
+Instructions submitted while a run is in progress are queued by
+`backend/services/steering_service.py` and read only at safe checkpoints: between
+goals, after a cell completes, and before follow-ups. They are never applied
+mid-execution. Once read, they are appended to the prompt context for subsequent
+LLM calls and echoed into the notebook.
+
+### Plot handling
+
+Cells emit plots as `application/vnd.plotly.v1+json` specs built as plain
+dictionaries via `emit_plot_spec`; the frontend renders them interactively. Plotly
+is not a Python dependency. `src/reporting/plot_contract.py` defines the spec shape.
+Matplotlib figures are captured as inline PNG and are what the agent passes back to
+vision-capable models.
 
 ## Prerequisites
 
@@ -218,36 +292,62 @@ REM edit .env and add your provider API key
 docker compose up --build
 ```
 
-The nginx service exposes the app on `http://localhost` by default.
+Compose starts two services. The backend is published on
+`http://localhost:8000` and the frontend on `http://localhost:3000`. Open the
+frontend to use the app.
+
+The browser resolves the API origin at runtime via `inferApiBase()` in
+`frontend/src/lib/backend.ts`, so no API URL needs to be configured for this
+layout. Set `NEXT_PUBLIC_API_URL` at image build time only when the backend is
+not reachable from the browser's origin.
+
+Session data persists in the `sessions` Docker volume across restarts.
+
+The backend image builds on both `linux/amd64` and `linux/arm64`. Tectonic is
+installed by direct download with the release asset selected from
+`dpkg --print-architecture`, because upstream publishes a musl build for aarch64
+and a gnu build for x86_64.
 
 ## Project structure
 
 ```
 src/
 ├── agent/
-│   ├── eda_agent.py          # Main orchestrator (multi-loop, multiprocess dispatch)
-│   ├── subagent.py           # Adaptive investigation loop (vision-in-the-loop)
+│   ├── eda_agent.py          # Main loop: goal checklist, investigation loops, synthesis
+│   ├── goals.py              # Ordered EDA checklist with skip predicates
+│   ├── code_templates.py     # Deterministic cell-source generators
+│   ├── reasoning.py          # Output interpretation (multimodal) + next-step decisions
+│   ├── hypothesis.py         # Hypothesis generation and dedup against the graph
+│   ├── subagent.py           # Adaptive per-hypothesis investigation loop
 │   ├── subagent_worker.py    # Process-safe worker (kernel connection via file)
-│   ├── hypothesis.py         # Hypothesis generation + dedup
-│   ├── knowledge_graph.py    # Typed nodes/edges, confidence scoring, persistence
-│   ├── reasoning.py          # LLM interpretation (multimodal) + next-step decisions
-│   └── state.py              # Agent state management
-├── config/config.py          # LLM provider configuration
-├── reporting/                # Story generation, versioning, plot contracts
-└── chat/                     # Chat agent builder
+│   ├── knowledge_graph.py    # Typed nodes/edges, confidence scoring, evidence chains
+│   └── state.py              # AgentState carried through the run
+├── config/config.py          # get_chat_model(): multi-provider LLM factory
+├── ingest/file_loader.py     # CSV/Excel/JSON/Parquet loading
+├── reporting/
+│   ├── story_builder.py      # Graph to story.json (sections, captions, plots)
+│   ├── plot_contract.py      # Plot artifact spec shared with the frontend
+│   └── versioning.py         # Notebook and story snapshot history
+└── chat/chat_agent.py        # Follow-up Q&A over the knowledge graph
 
 backend/
+├── app.py                    # FastAPI application, router mounting, CORS
+├── Dockerfile                # Backend image (builds on amd64 and arm64)
 ├── routers/
-│   ├── run.py                # Pipeline execution (background thread)
+│   ├── run.py                # Starts run_agent in a background thread
 │   ├── chat.py               # Chat + hypothesis investigation events/status
-│   ├── notebook.py           # Notebook fetch/patch persistence with output normalization
+│   ├── notebook.py           # Notebook fetch/patch with output normalization
 │   ├── kernel.py             # Session kernel status and code-cell execution
 │   ├── story.py              # Story fetch, regenerate, PDF/Markdown export
 │   ├── stream.py             # WebSocket event streaming
-│   └── session.py            # Upload, session management
+│   ├── session.py            # Upload, session management
+│   └── history.py            # Version history endpoints
 └── services/
     ├── kernel_manager.py     # IPython kernel lifecycle + cross-process execution
-    └── kernel_pool.py        # Multi-kernel allocation for parallel subagents
+    ├── kernel_pool.py        # Multi-kernel allocation for parallel subagents
+    ├── session_manager.py    # Session directories on disk
+    ├── steering_service.py   # Queue for mid-run user instructions
+    └── history_service.py    # Delegates to src/reporting/versioning.py
 
 frontend/src/
 ├── stores/                   # Zustand (notebook, story, chat, session)
@@ -255,21 +355,33 @@ frontend/src/
 ├── components/
 │   ├── notebook/             # NotebookPane, NotebookCell, CellOutput, ThinkingBlock
 │   ├── story/                # StoryPane, StorySectionCard (KaTeX + cross-notebook citations)
-│   ├── chat/                 # ChatSidebar, ChatInput
+│   ├── chat/                 # ChatSidebar, ChatInput, ExecutionPlan
 │   └── layout/               # AgentActivityBadge, NotebookTabs
 └── app/session/[id]/page.tsx # Main session page
 
 docs/
 ├── SPECS.md                  # Original specification
-├── design.md                 # Architecture design notes
-├── plans/                    # Implementation plans (plan1-12)
-└── cleanups/                 # Cleanup/refactor plans (cleanup1-13)
+└── design.md                 # Architecture design notes
 ```
 
 ## Tech stack
 
-- **Agent**: Python, LangChain, multiprocessing
+- **Agent**: Python, `multiprocessing` for parallel subagents
 - **Backend**: FastAPI, Jupyter kernel client, WebSocket streaming
 - **Frontend**: Next.js, React, Zustand, Tailwind CSS, KaTeX, react-markdown
-- **LLM**: configurable (OpenAI, Anthropic, Google)
+- **LLM**: configurable (OpenAI, Anthropic, Google, Azure, OpenAI-compatible)
 - **PDF**: tectonic (LaTeX) with IEEEtran document class
+
+LangChain is used as a provider abstraction only. `get_chat_model()` builds a
+client from `langchain-core` plus the adapter package for the configured
+provider, and the agent calls `.invoke()` on it with `SystemMessage` and
+`HumanMessage`. Control flow, state, and looping are implemented directly in
+`src/agent/`, so there are no chains, prompt templates, output parsers, or tool
+binding. Prompts are f-strings and structured responses are parsed with
+`json.loads`.
+
+`requirements.txt` includes `scipy`, `statsmodels`, and `scikit-learn` even
+though no module under `src/` imports them. The agent generates Python that runs
+in the Jupyter kernel and uses these libraries; `scipy.stats` is named
+explicitly in the subagent prompt. Removing them causes generated cells to fail
+at execution time.

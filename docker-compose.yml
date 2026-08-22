@@ -4,35 +4,21 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     env_file: .env
+    ports:
+      - "8000:8000"
     volumes:
       - sessions:/app/sessions
     restart: unless-stopped
-    networks:
-      - web
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    restart: unless-stopped
-    networks:
-      - web
-
-  nginx:
-    image: nginx:alpine
-    container_name: agenticeda-nginx
-    volumes:
-      - ./nginx/active.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:3000"
     depends_on:
       - backend
-      - frontend
-    networks:
-      - web
     restart: unless-stopped
-
-networks:
-  web:
-    external: true
 
 volumes:
   sessions:

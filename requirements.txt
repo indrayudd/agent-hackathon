@@ -9,8 +9,12 @@ seaborn
 python-dotenv
 
 # LangChain — used as a multi-provider chat-model shim (get_chat_model).
-# Only the provider adapters, message types, and .invoke() are used.
-langchain
+# Only the provider adapters, message types, and .invoke() are used: no chains,
+# prompt templates, output parsers, or tool binding.
+#
+# The `langchain` meta-package is deliberately NOT listed. Nothing imports it,
+# and it depends on langgraph, which would pull an unused orchestration stack
+# into the image. The provider adapters below need only langchain-core.
 langchain-core
 
 # Model provider adapters imported in config/config.py
