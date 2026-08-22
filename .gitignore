@@ -23,8 +23,11 @@ traces
 sessions/
 .codex-run/
 node_modules/
-package.json
-package-lock.json
+# Root-anchored: frontend/package.json and frontend/package-lock.json are
+# tracked and required to build. An unanchored pattern matches at any depth and
+# would exclude them from a fresh checkout.
+/package.json
+/package-lock.json
 frontend/.next/
 
 .playwright-cli/
