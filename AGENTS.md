@@ -1,188 +1,138 @@
-# JupyterLab Backend Notes
+# AgenticEDA — Backend Notes
 
-This backend is being built as a sequential pipeline. The `--mode` flag in
-[`src/main.py`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/main.py)
-means "run up to this stage", not "run only this stage in isolation".
+This backend serves a real-time agentic EDA product. A user uploads a dataset;
+an agent writes and executes notebook cells live, streaming every action to the
+frontend over a WebSocket.
 
-Current intended stage order:
+> **Note:** this file previously documented a staged `--mode` pipeline built on
+> LangGraph (`src/pipeline.py` plus per-phase modules under `src/ingest/`,
+> `src/quality_handling/`, `src/univariate_analysis/`, and others). That code
+> was never reachable from the running server and has been removed. See
+> "History" at the bottom.
 
-1. `input`
-2. `format`
-3. `infer_type`
-4. `infer_structure`
-5. `compute_temporal_stats`
-6. `integrity`
-7. `audit_missingness`
-8. `handle_missingness`
-9. `standardize`
-10. `univariate_metrics_plotting`
-11. `test_transforms`
+## Entrypoint
+
+```
+docker-compose.yml → backend/Dockerfile → uvicorn backend.app:app
+  → backend/routers/run.py:_run_agent_in_thread
+    → src.agent.eda_agent.run_agent
+```
+
+`run_agent` executes in a background thread per session. There is no CLI
+entrypoint.
 
 ## Package Layout
 
-- Backend runtime code now lives under [`src/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src).
-- Ingestion stages live under [`src/ingest/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/ingest).
-- Configuration lives under [`src/config/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/config).
-- Shared deterministic helpers live under [`src/tools/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/tools).
+- `backend/` — FastAPI app: routers, services, Pydantic models.
+- `src/agent/` — the agent loop. This is where the product logic lives.
+- `src/config/config.py` — `get_chat_model()`, the multi-provider LLM factory.
+- `src/chat/chat_agent.py` — follow-up Q&A over the knowledge graph.
+- `src/ingest/file_loader.py` — CSV/Excel/Parquet loading.
+- `src/reporting/` — story building, plot contract, version history.
 
-## Graphify Orientation
+## Agent Loop Shape
 
-- A `graphify` run over `src/` produced the current codebase map under
-  [`graphify-out/`](/Users/indro/Projects/Hackathon/AgenticEDAHackathon/graphify-out).
-  Key outputs are `graph.html`, `GRAPH_REPORT.md`, and `graph.json`.
-- The `src/` graph was code-only AST extraction: 959 nodes, 1,495 edges, and
-  41 communities. It did not use semantic LLM extraction tokens.
-- The highest-connectivity nodes were:
-  - `load_dataset()`
-  - `run_agent()`
-  - `write_stage_trace()`
-  - `_merge()`
-  - `get_chat_model()`
-- The graph reinforces that this backend is a staged EDA pipeline, with
-  cross-cutting glue concentrated in dataset loading, trace writing, model
-  access, and pipeline fan-in/merge helpers.
-- `write_stage_trace()` is a major cross-stage connector. It links causal,
-  quality-handling, integrity, drift, changepoint, panel comparison, and
-  temporal-analysis stages through shared trace/report artifact behavior.
-- `get_chat_model()` is another broad connector because multiple agentic or
-  LLM-gated stages depend on the same configured chat-model access path.
-- When making changes, treat `src/pipeline.py`, `src/main.py`,
-  `src/tools/trace_writer.py`, dataset loading helpers, and model settings as
-  high-blast-radius areas. Small changes there can affect many stages.
+`run_agent` (`src/agent/eda_agent.py`) has three sections:
 
-## Schema / Series Structure
+1. **Goal checklist** — iterates `build_goal_checklist()` from
+   `src/agent/goals.py`. Each goal has a `should_skip(state)` predicate, so
+   time-series steps are skipped when no usable time column was parsed. Cell
+   sources come from `src/agent/code_templates.py` (deterministic) with LLM
+   interpretation and at most one follow-up per goal via
+   `src/agent/reasoning.py`.
 
-- The time column is derived by the formatter stage. It should not be manually
-  overridden from the CLI.
-- Entity identifiers are also intended to be derived, not passed in manually.
-- In `infer_type.py`, secondary/entity keys should be modeled as
-  `secondary_keys: list[str]`, not a single string, because real datasets may
-  require a composite entity key such as `(store_id, sku_id)`.
-- A dataset with entity identifiers should generally be classified as
-  `"multiple"` even if it also has several numeric value columns.
-- `infer_type` is deterministic-first. It uses helper functions in
-  `src/tools/input_tools.py` and only uses fuzzy/agentic fallback for
-  ambiguous secondary-key cases.
-- If timestamps are mostly unique, the pipeline should short-circuit away from
-  panel detection and classify the dataset as single-series or multivariate.
+2. **Investigation loops** — up to `max_loops` rounds. Each round generates
+   hypotheses (`src/agent/hypothesis.py`), deduplicates them against the
+   knowledge graph, dispatches up to `max_subagents` in parallel, then ingests
+   results into the graph. A round stops early if it produced no findings above
+   0.5 confidence.
 
-## Input / Bad Rows
+3. **Conclusion synthesis** — one LLM call over the accumulated graph.
 
-- `run_input_handler()` detects bad/non-data rows and stores them as
-  `bad_rows`.
-- `bad_rows` is intended for rows that appear in the loaded dataset and do not
-  behave like observations because temporal fields are missing or unparseable.
-- Each bad row currently carries:
-  - `row_index`
-  - `csv_row_number`
-  - `temporal_values`
-  - `reasons`
-  - `raw_row`
-  - `fuzzy_descriptor`
-- The fuzzy descriptor is intentionally lightweight and can be used downstream
-  for later cleanup or reporting.
-- The recent confusion around `FREDtest.csv` was interpretive, not a current
-  code bug:
-  - `row_index` is dataframe row index
-  - `csv_row_number` is physical CSV line number
-  - the `Transform:` row is a bad data row after the header, not the header
-    itself
-  - the trailing comma-only row was already being detected
+## Subagent Parallelism
 
-## Integrity Expectations
+Subagents run as `multiprocessing.Process`, not threads
+(`eda_agent.py` around the `mp.Process` construction). Two constraints worth
+preserving:
 
-- Integrity checks depend on inferred schema, so `infer_type` should happen
-  before `integrity`.
-- The quality-handling stages are intended to run after integrity:
-  - `audit_missingness` measures value missingness and timestamp holes
-  - `handle_missingness` chooses bounded repair actions from the audit
-  - `standardize` optionally applies scale transforms after missingness handling
-- The current integrity implementation only supports one entity identifier for
-  sanity checks.
-- As a temporary bridge, integrity uses the first element of `secondary_keys`
-  as `entity_col`.
-- This is intentionally temporary. The correct long-term behavior is to support
-  composite entity keys directly during duplicate and jump checks.
+- Results must be read off `result_queue` **before** `p.join()`. On macOS the
+  queue is a pipe with a limited buffer; if the child's `put()` blocks on a full
+  pipe it can never exit, and `join()` hangs forever.
+- Processes are used partly so a wedged subagent can be `terminate()`d. A thread
+  cannot be killed, so switching to threads would lose the timeout guarantee.
 
-## Quality Handling Status
+Each subagent gets its own kernel from `backend/services/kernel_pool.py`, seeded
+from a parquet checkpoint of the cleaned dataframe. If the checkpoint is
+missing, subagents fall back to the main kernel.
 
-- The quality-handling package now exists under
-  [`src/quality_handling/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/quality_handling)
-  and is wired into [`src/main.py`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/main.py)
-  via the `audit_missingness`, `handle_missingness`, and `standardize` modes.
-- `audit_missingness` is deterministic. It separates:
-  - missing values inside observed rows
-  - missing timestamps / coverage holes in the expected time grid
-- Timestamp holes are currently audited and logged, not repaired.
-  - The backend does not currently reindex to an expected grid
-  - It does not insert synthetic rows for absent timestamps
-  - It does not impute missing timestamps as part of `handle_missingness`
-- `handle_missingness` is intended for cell-level missing-value handling only.
-  - The LLM chooses among bounded strategies such as `leave_as_nan`,
-    `forward_fill`, `interpolate`, `zero_fill`, and `drop_rows`
-  - The actual data mutation is deterministic and recorded in traces/artifacts
-- `standardize` is optional at the dataset level.
-  - The stage first profiles scale/tail behavior deterministically
-  - Then an LLM gate decides whether point 9 should run at all for the dataset
-  - If the gate says `no`, the stage returns the handled dataset unchanged
-  - If the gate says `yes`, the LLM may still choose `none` for individual
-    columns
-- The intended current behavior for SCADA / sensor-style datasets is usually:
-  - audit missingness
-  - optionally handle cell-level missing values
-  - skip standardization unless there is a strong modeling-oriented reason
-- The user-facing plan summaries for `handle_missingness` and `standardize`
-  are synthesized from the final normalized action list, so they should match
-  the actual applied plan rather than raw LLM prose.
+## State
 
-## Univariate Analysis Status
+`src/agent/state.py` holds `AgentState`, a mutable dataclass threaded through
+the whole run. Almost every field is a primitive; the exception is
+`knowledge_graph`, which holds a live `KnowledgeGraph`. That class has
+`to_dict()`/`from_dict()`, so the state is serializable with a small custom
+encoder if checkpointing is ever added.
 
-- The univariate-analysis package now exists under
-  [`src/univariate_analysis/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/univariate_analysis)
-  and is wired into [`src/main.py`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/src/main.py)
-  via the `univariate_metrics_plotting` and `test_transforms` modes.
-- `univariate_metrics_plotting` covers EDA rules 10 and 11.
-  - It computes deterministic univariate summary metrics for numeric features
-  - It writes per-feature histogram + ECDF plots
-  - KDE is only plotted when there is enough continuous support for a stable
-    deterministic Gaussian-kernel estimate
-  - The stage analyzes the handled dataset path rather than the standardized
-    path, so raw-value interpretability is preserved for univariate EDA
-- `test_transforms` covers EDA rule 12.
-  - It is fully deterministic
-  - It only tests transforms for columns with enough evidence that a transform
-    might matter, currently using thresholds on non-null support, skewness, and
-    tail ratio
-  - Candidate transforms are compared by deterministic shape-improvement scores
-    rather than LLM judgment or external fitting libraries
-  - The stage reports recommendations; it does not mutate the dataset
+Note that serializing `AgentState` does not make a run resumable on its own —
+the Jupyter kernel holds `df` in memory, and restoring agent state would leave a
+dangling reference. The parquet checkpoint is the seed of a real resume path.
 
-## State Shape
+Be careful about size: `node.metadata["plot_images"]` stores base64 PNGs. Any
+checkpointing scheme should write images to the session dir and store paths
+instead.
 
-- The project is moving toward one consolidated state shared across the
-  sequential pipeline.
-- Until that is finalized, stage outputs should expose a composite state that
-  includes every field that has ever been part of the pipeline state, even if a
-  given stage has not populated some of those fields yet.
-- For earlier modes such as `infer_type`, later-stage integrity-related fields
-  may still be present with default values. That is expected.
+## Knowledge Graph
 
-## Redundancy / Reporting
+`src/agent/knowledge_graph.py` accumulates typed nodes (`fact`, `hypothesis`,
+`evidence`, `conclusion`) with weighted edges. It handles confidence scoring
+from statistical evidence, hypothesis dedup by similarity, supersession, and
+cross-investigation reinforcement when findings share columns. It is also what
+the chat agent and story builder read from.
 
-- There is known redundancy between `report` and other top-level state fields.
-- Short term, carrying redundant fields is acceptable while the consolidated
-  state is still being worked out.
-- Longer term, internal graph state should likely be normalized, with any
-  packaged `report` artifact assembled at stage boundaries or final output.
-- Deterministic evidence that was cluttering the state has been moved into
-  trace files under [`traces/`](/Users/indro/src/tutorials1/agentic_eda/jupyterlab_extension_backend/traces)
-  rather than kept in the main payload.
-- Stage-produced dataset artifacts such as handled/standardized CSV outputs are
-  also written under that same top-level `traces/` directory.
+## Streaming and Steering
 
-## CLI / Output Intent
+Everything the agent does is pushed through the `push_event` callback, forwarded
+to the client by `backend/routers/stream.py`. Event types include `cell_write`,
+`cell_executing`, `cell_output`, `cell_error`, `thinking`, `phase_transition`,
+`plan_update`, and the subagent lifecycle events.
 
-- `src/main.py` should prefer derived schema over manual key arguments.
-- The output of a stage should reflect the state accumulated up to that stage.
-- In particular, `infer_type` should return the full composite payload, not only
-  the narrowed `type`/`primary_key`/`secondary_keys` subset.
+User steering is queued by `backend/services/steering_service.py` and drained
+only at safe checkpoints — between goals, after cells, before follow-ups — never
+mid-execution.
+
+## LLM Access
+
+`get_chat_model()` supports `openai`, `openai_compatible`, `azure_openai_v1`,
+`anthropic`, and `google`. It is `lru_cache`d, so config changes need a process
+restart.
+
+LangChain is used **only** as a provider shim: the adapter classes, the
+`SystemMessage`/`HumanMessage` types, and `.invoke()`. There are no chains, no
+prompt templates, no output parsers, no tool binding. Prompts are f-strings and
+structured output is hand-parsed (`json.loads` after stripping markdown fences).
+Keep it that way or adopt the abstractions deliberately — don't mix.
+
+## Plots
+
+"plotly" in this codebase is a **MIME type, not a library**. Cells emit
+`application/vnd.plotly.v1+json` specs built as plain dicts via
+`emit_plot_spec` in `src/agent/code_templates.py`; the frontend renders them.
+Plotly is deliberately not a Python dependency. `src/reporting/plot_contract.py`
+defines the spec shape.
+
+## Dependencies
+
+`requirements.txt` carries `scipy`, `statsmodels`, and `scikit-learn` even
+though no file under `src/` imports them. The agent *generates* Python that runs
+in the kernel and reaches for these. Removing them breaks generated cells at
+runtime, not at import time — which is much harder to notice. `scipy.stats` is
+named explicitly in the subagent prompt.
+
+## History
+
+The original design was a sequential 11-stage LangGraph pipeline driven by
+`src/main.py --mode <stage>`, where `--mode` meant "run up to this stage". The
+live product replaced it with the agent loop above. The pipeline, its stage
+modules, and its two test files were removed once confirmed unreachable from
+`backend.app`. If you want that history, it is in the git log before this
+commit.

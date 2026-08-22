@@ -220,52 +220,6 @@ docker compose up --build
 
 The nginx service exposes the app on `http://localhost` by default.
 
-## Run a pipeline stage from the CLI
-
-The CLI runs the sequential backend pipeline up to the selected stage.
-
-Linux:
-
-```bash
-PYTHONPATH=. python3 -m src.main --mode test_transforms --path datasets/your_dataset.csv
-```
-
-macOS:
-
-```bash
-PYTHONPATH=. python3 -m src.main --mode test_transforms --path datasets/your_dataset.csv
-```
-
-Windows PowerShell:
-
-```powershell
-$env:PYTHONPATH="."
-python -m src.main --mode test_transforms --path datasets\your_dataset.csv
-```
-
-Windows Command Prompt:
-
-```bat
-set PYTHONPATH=.
-python -m src.main --mode test_transforms --path datasets\your_dataset.csv
-```
-
-Available modes:
-
-```text
-input
-format
-infer_type
-infer_structure
-compute_temporal_stats
-integrity
-audit_missingness
-handle_missingness
-standardize
-univariate_metrics_plotting
-test_transforms
-```
-
 ## Project structure
 
 ```

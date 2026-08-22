@@ -19,9 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source
 COPY backend/ backend/
 COPY src/ src/
-COPY datasets/ datasets/
 COPY ieee_template/ ieee_template/
-COPY EDA_RULES.txt ./
 
 # Create sessions dir
 RUN mkdir -p sessions

@@ -9,4 +9,3 @@ frontend/.next
 docs/
 *.md
 !requirements.txt
-!EDA_RULES.txt
