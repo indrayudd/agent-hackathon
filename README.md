@@ -360,7 +360,6 @@ frontend/src/
 └── app/session/[id]/page.tsx # Main session page
 
 docs/
-├── SPECS.md                  # Original specification
 └── design.md                 # Architecture design notes
 ```
 
